@@ -259,8 +259,11 @@ func (l *LidStateDetector) Run(ctx context.Context) error {
 				logrus.Debug("Signal, calling getCurrentState")
 				currentState, err = l.getCurrentState(ctx)
 				if err != nil {
-					logrus.WithError(err).Error("getCurrentState failed")
-					return fmt.Errorf("failed to get power state after signal %s: %w", signal.Name, err)
+					// e.g. UPower restarting during an upgrade, keep the last known state
+					// and wait for the next signal instead of stopping the daemon
+					logrus.WithError(err).WithField("signal_name", signal.Name).Warn(
+						"Cant query the lid state after a signal, keeping the last known state")
+					continue
 				}
 
 				logrus.WithFields(logrus.Fields{"state": currentState}).Debug("getCurrentState succeeded")

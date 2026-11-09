@@ -88,7 +88,8 @@ func NewApplication(
 		DryRun: *dryRun,
 	}, matcher, generator, notifications, lidDetector)
 
-	reloader := reloader.NewService(cfg, fswatcher, powerDetector, svc, *disableAutoHotReload, lidDetector, generator)
+	reloader := reloader.NewService(cfg, fswatcher, powerDetector, svc, *disableAutoHotReload, lidDetector, generator,
+		notifications, *dryRun)
 
 	signalHandler := signal.NewHandler(cancel, reloader, svc)
 

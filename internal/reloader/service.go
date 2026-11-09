@@ -33,6 +33,10 @@ type IGenerators interface {
 	ValidateTemplates() error
 }
 
+type INotifier interface {
+	NotifyError(summary string, cause error, dryRun bool) error
+}
+
 type Service struct {
 	cfg                  *config.Config
 	filewatcher          IFilewatcher
@@ -41,24 +45,49 @@ type Service struct {
 	service              IService
 	gen                  IGenerators
 	disableAutoHotReload *bool
+	notifier             INotifier
+	dryRun               bool
 }
 
+// NewService creates the reloader, notifier can be nil
 func NewService(cfg *config.Config, filewatcher IFilewatcher, powerDetector IPowerDetector,
 	service IService, disableAutoHotReload bool, lidDetector ILidDetector, gen IGenerators,
+	notifier INotifier, dryRun bool,
 ) *Service {
 	return &Service{
-		cfg,
-		filewatcher,
-		powerDetector,
-		lidDetector,
-		service,
-		gen,
-		&disableAutoHotReload,
+		cfg:                  cfg,
+		filewatcher:          filewatcher,
+		powerDetector:        powerDetector,
+		lidDetector:          lidDetector,
+		service:              service,
+		gen:                  gen,
+		disableAutoHotReload: &disableAutoHotReload,
+		notifier:             notifier,
+		dryRun:               dryRun,
 	}
 }
 
+// Handle reloads on SIGHUP, a failed reload is reported but does not stop the daemon
 func (s *Service) Handle(ctx context.Context) error {
-	return s.Reload(ctx)
+	s.reloadAndReport(ctx)
+	return nil
+}
+
+// reloadAndReport runs a reload and reports a failure instead of returning it,
+// a broken config while the user is editing it should not stop the daemon,
+// the previously loaded config stays in use when the new one cant be parsed
+func (s *Service) reloadAndReport(ctx context.Context) {
+	err := s.Reload(ctx)
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	logrus.WithError(err).Error("Reload failed, keeping the daemon running")
+	if s.notifier == nil {
+		return
+	}
+	if nerr := s.notifier.NotifyError("reload failed", err, s.dryRun); nerr != nil {
+		logrus.WithError(nerr).Error("swallowing notification error")
+	}
 }
 
 func (s *Service) Reload(ctx context.Context) error {
@@ -112,9 +141,7 @@ func (s *Service) Run(ctx context.Context) error {
 					return errors.New("watcher event channel closed")
 				}
 				logrus.Debug("Watcher event received")
-				if err := s.Reload(ctx); err != nil {
-					return fmt.Errorf("cant reload user configuration: %w", err)
-				}
+				s.reloadAndReport(ctx)
 
 			case <-ctx.Done():
 				logrus.Debug("Reloader event processor context cancelled, shutting down")

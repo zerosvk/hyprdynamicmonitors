@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"regexp"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,9 +36,15 @@ func GenerateTestObjectPath() string {
 // TestDbusService provides a mock D-Bus service for testing
 type TestDbusService struct {
 	conn           *dbus.Conn
-	propertyValue  bool
+	propertyValue  atomic.Bool
 	testObjectPath string
 	t              *testing.T
+	failGet        atomic.Bool
+}
+
+// SetFailGet makes property queries fail, e.g. to simulate UPower restarting
+func (s *TestDbusService) SetFailGet(fail bool) {
+	s.failGet.Store(fail)
 }
 
 func NewTestDbusService(t *testing.T, conn *dbus.Conn, initial power.PowerState, objectPath string) *TestDbusService {
@@ -51,8 +58,11 @@ func NewTestDbusService(t *testing.T, conn *dbus.Conn, initial power.PowerState,
 }
 
 func (s *TestDbusService) Get(interfaceName, propertyName string) (dbus.Variant, *dbus.Error) {
+	if s.failGet.Load() {
+		return dbus.MakeVariant(false), dbus.NewError("org.freedesktop.DBus.Error.ServiceUnknown", nil)
+	}
 	if interfaceName == testInterface && propertyName == testProperty {
-		return dbus.MakeVariant(s.propertyValue), nil
+		return dbus.MakeVariant(s.propertyValue.Load()), nil
 	}
 	return dbus.MakeVariant(false), dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", nil)
 }
@@ -60,9 +70,9 @@ func (s *TestDbusService) Get(interfaceName, propertyName string) (dbus.Variant,
 func (s *TestDbusService) SetLidProperty(value power.LidState) {
 	switch value {
 	case power.OpenedLidState:
-		s.propertyValue = false
+		s.propertyValue.Store(false)
 	case power.ClosedLidState:
-		s.propertyValue = true
+		s.propertyValue.Store(true)
 	default:
 		assert.True(s.t, false, "unknown lid state")
 	}
@@ -71,9 +81,9 @@ func (s *TestDbusService) SetLidProperty(value power.LidState) {
 func (s *TestDbusService) SetProperty(value power.PowerState) {
 	switch value {
 	case power.ACPowerState:
-		s.propertyValue = false
+		s.propertyValue.Store(false)
 	case power.BatteryPowerState:
-		s.propertyValue = true
+		s.propertyValue.Store(true)
 	default:
 		assert.True(s.t, false, "unknown power state")
 	}

@@ -3,6 +3,7 @@ package reloader_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -67,6 +68,68 @@ func (f *fakeGenerator) ValidateTemplates() error {
 	return f.validateTemplatesErr
 }
 
+type fakeNotifier struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *fakeNotifier) NotifyError(string, error, bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return nil
+}
+
+func (f *fakeNotifier) Calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func TestService_Run_ReloadErrorKeepsRunning(t *testing.T) {
+	cfg := testutils.NewTestConfig(t).Get()
+
+	channel := make(chan interface{}, 1)
+	filewatcher := &fakeFilewatcher{channel: channel}
+	notifier := &fakeNotifier{}
+	reloaderService := reloader.NewService(cfg, filewatcher, &fakePowerDetector{},
+		&fakeService{updateErr: errors.New("template failed")}, false, &fakeLidDetector{}, &fakeGenerator{},
+		notifier, false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- reloaderService.Run(ctx)
+	}()
+
+	// two failing reloads in a row, the service must survive both
+	channel <- true
+	assert.Eventually(t, func() bool { return notifier.Calls() == 1 }, time.Second, 10*time.Millisecond)
+	channel <- true
+	assert.Eventually(t, func() bool { return notifier.Calls() == 2 }, time.Second, 10*time.Millisecond)
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("reloader stopped on a failed reload: %v", err)
+	default:
+	}
+
+	// SIGHUP path reports the failure instead of returning it
+	require.NoError(t, reloaderService.Handle(ctx))
+	assert.Equal(t, 3, notifier.Calls())
+
+	cancel()
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "context canceled")
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for service to shutdown")
+	}
+}
+
 func TestService_Reload(t *testing.T) {
 	ctx := context.Background()
 	cfg := testutils.NewTestConfig(t).Get()
@@ -125,7 +188,7 @@ func TestService_Reload(t *testing.T) {
 			lidDetector := &fakeLidDetector{reloadErr: tt.lidErr}
 			generator := &fakeGenerator{validateTemplatesErr: tt.validateTemplatesErr}
 
-			reloaderService := reloader.NewService(cfg, filewatcher, powerDetector, service, false, lidDetector, generator)
+			reloaderService := reloader.NewService(cfg, filewatcher, powerDetector, service, false, lidDetector, generator, nil, false)
 
 			err := reloaderService.Reload(ctx)
 
@@ -186,7 +249,7 @@ func TestService_Run(t *testing.T) {
 			generator := &fakeGenerator{}
 
 			reloaderService := reloader.NewService(cfg, filewatcher, powerDetector,
-				service, tt.hotReloadDisabled, lidDetector, generator)
+				service, tt.hotReloadDisabled, lidDetector, generator, nil, false)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()

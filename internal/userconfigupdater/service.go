@@ -163,17 +163,32 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	return nil
 }
 
+// debounceUpdate applies the matching profile after monitor, power or lid events,
+// failures are reported but do not stop the daemon, the next event retries
 func (s *Service) debounceUpdate(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return context.Cause(ctx)
-	default:
-		return s.UpdateOnce(ctx)
+	// a cancelled context means superseded by a newer event or shutting down, not an error
+	if ctx.Err() == nil {
+		s.updateAndReport(ctx)
 	}
+	return nil
 }
 
+// Handle applies the matching profile on SIGUSR1
 func (s *Service) Handle(ctx context.Context) error {
-	return s.UpdateOnce(ctx)
+	s.updateAndReport(ctx)
+	return nil
+}
+
+func (s *Service) updateAndReport(ctx context.Context) {
+	err := s.UpdateOnce(ctx)
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	logrus.WithError(err).Error("Applying the profile failed, keeping the daemon running")
+	if nerr := s.notificationsService.NotifyError("applying the profile failed", err,
+		s.serviceConfig.DryRun); nerr != nil {
+		logrus.WithError(nerr).Error("swallowing notification error")
+	}
 }
 
 func (s *Service) UpdateOnce(ctx context.Context) error {

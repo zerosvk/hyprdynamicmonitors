@@ -134,7 +134,10 @@ func (t *TUI) Run(ctx context.Context, cancel context.CancelCauseFunc) error {
 					}
 					logrus.Debug("Watcher event received")
 					if err := t.cfg.Reload(); err != nil {
-						return fmt.Errorf("cant reload user configuration: %w", err)
+						// keep the TUI open with the previous config, the user is likely mid-edit
+						logrus.WithError(err).Error("Cant reload user configuration")
+						t.program.Send(tui.OperationStatusCmd(tui.OperationNameHDMConfigReloadRequested, err)())
+						continue
 					}
 					t.program.Send(tui.ConfigReloaded{})
 

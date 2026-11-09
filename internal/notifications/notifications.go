@@ -48,3 +48,26 @@ func (s *Service) NotifyProfileApplied(profile *config.Profile, dryRun bool) err
 	logrus.Info("Update notification sent to the user")
 	return nil
 }
+
+// NotifyError tells the user that something failed while the daemon keeps running,
+// e.g. a config reload with a typo in it
+func (s *Service) NotifyError(summary string, cause error, dryRun bool) error {
+	if *s.config.Get().Notifications.Disabled {
+		logrus.Debug("notifications are not enabled, not sending")
+		return nil
+	}
+	if dryRun {
+		logrus.WithFields(utils.NewLogrusEmptyFields().WithLogID(utils.DryRunNotificationLogID)).
+			Info("[DRY RUN] Would send error notification")
+		return nil
+	}
+
+	ntf := notify.NewNotification("HyprDynamicMonitors: "+summary, cause.Error())
+	ntf.Timeout = *s.config.Get().Notifications.TimeoutMs
+	ntf.Hints = s.hints
+
+	if _, err := ntf.Show(); err != nil {
+		return fmt.Errorf("cant send error notification: %w", err)
+	}
+	return nil
+}

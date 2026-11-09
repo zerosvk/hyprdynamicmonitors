@@ -3,7 +3,6 @@ package signal
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -71,14 +70,14 @@ func (h *Handler) Run(ctx context.Context) error {
 				case syscall.SIGHUP:
 					logrus.Info("Received SIGHUP")
 					if err := h.sighup.Handle(ctx); err != nil {
-						return fmt.Errorf("SIGUSR1 handler failed: %w", err)
+						logrus.WithError(err).Error("SIGHUP handler failed")
 					} else {
 						logrus.Info("SIGHUP handled normally")
 					}
 				case syscall.SIGUSR1:
 					logrus.Info("Received SIGUSR1")
 					if err := h.sigurs1.Handle(ctx); err != nil {
-						return fmt.Errorf("error while handling SIGUSR1: %w", err)
+						logrus.WithError(err).Error("SIGUSR1 handler failed")
 					} else {
 						logrus.Info("SIGUSR1 handled normally")
 					}
