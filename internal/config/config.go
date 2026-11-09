@@ -26,9 +26,10 @@ var defaultConfigTemplate string
 const LeaveEmpty = "leaveEmptyToken"
 
 type Config struct {
-	cfg  *RawConfig
-	path string
-	mu   sync.RWMutex
+	cfg      *RawConfig
+	path     string
+	mu       sync.RWMutex
+	reloadMu sync.Mutex
 }
 
 func NewConfig(path string) (*Config, error) {
@@ -45,18 +46,22 @@ func NewConfig(path string) (*Config, error) {
 }
 
 func (c *Config) Get() *RawConfig {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.cfg
 }
 
+// Reload parses the config without holding the lock (file reads, upower), so readers
+// are not blocked meanwhile; reloadMu keeps concurrent reloads from racing each other
 func (c *Config) Reload() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.reloadMu.Lock()
+	defer c.reloadMu.Unlock()
 	cfg, err := Load(c.path)
 	if err != nil {
 		return fmt.Errorf("cant reload config from %s: %w", c.path, err)
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.cfg = cfg
 	return nil
 }
@@ -450,7 +455,7 @@ func Load(configPath string) (*RawConfig, error) {
 	logrus.Debugf("Config contents: %s", contents)
 
 	var config RawConfig
-	m, err := toml.DecodeFile(configPath, &config)
+	m, err := toml.Decode(string(contents), &config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode TOML: %w", err)
 	}
@@ -609,7 +614,7 @@ func (t *TUISection) Validate(configDirPath string) error {
 		logrus.Debugf("Config contents: %s", contents)
 
 		var config TUIColors
-		_, err = toml.DecodeFile(*t.Colors.SourceFile, &config)
+		_, err = toml.Decode(string(contents), &config)
 		if err != nil {
 			return fmt.Errorf("failed to decode TOML: %w", err)
 		}
@@ -1069,18 +1074,23 @@ func (ps *PowerSection) Validate() error {
 		}
 	}
 
-	defaultPowerLine := "/org/freedesktop/UPower/devices/line_power_ACAD"
-	powerLine, err := utils.GetPowerLine()
-	if err != nil {
-		logrus.WithError(err).Warningf("No power line available, will use a default: %s", defaultPowerLine)
-		powerLine = utils.JustPtr(defaultPowerLine)
+	// the power line is only needed for defaults, inferring it runs `upower -e`
+	// so skip it when the user configured explicit paths
+	defaultObjectPath := ""
+	if ps.needsPowerLine() {
+		defaultPowerLine := "/org/freedesktop/UPower/devices/line_power_ACAD"
+		powerLine, err := utils.GetPowerLine()
+		if err != nil {
+			logrus.WithError(err).Warningf("No power line available, will use a default: %s", defaultPowerLine)
+			powerLine = utils.JustPtr(defaultPowerLine)
+		}
+		logrus.WithFields(logrus.Fields{"power_line": *powerLine}).Info(
+			"Inferred power line")
+		defaultObjectPath = *powerLine
 	}
-	logrus.WithFields(logrus.Fields{"power_line": *powerLine}).Info(
-		"Inferred power line")
 
 	defaultInterface := "org.freedesktop.DBus.Properties"
 	defaultMember := "PropertiesChanged"
-	defaultObjectPath := *powerLine
 	for _, rule := range ps.DbusSignalMatchRules {
 		if err := rule.Validate(defaultInterface, defaultMember, defaultObjectPath); err != nil {
 			return fmt.Errorf("one of the dbus match rules is invalid: %w", err)
@@ -1105,7 +1115,7 @@ func (ps *PowerSection) Validate() error {
 
 	defaultDestination := "org.freedesktop.UPower"
 	defaultMethod := "org.freedesktop.DBus.Properties.Get"
-	defaultPath := *powerLine
+	defaultPath := defaultObjectPath
 	defaultArgs := []DbusQueryObjectArg{
 		{Arg: "org.freedesktop.UPower.Device"},
 		{Arg: "Online"},
@@ -1117,6 +1127,17 @@ func (ps *PowerSection) Validate() error {
 	}
 
 	return nil
+}
+
+// needsPowerLine reports whether any default depends on the inferred power line,
+// i.e. a match rule without object_path or a query object without path
+func (ps *PowerSection) needsPowerLine() bool {
+	for _, rule := range ps.DbusSignalMatchRules {
+		if rule.ObjectPath == nil {
+			return true
+		}
+	}
+	return ps.DbusQueryObject == nil || ps.DbusQueryObject.Path == ""
 }
 
 func (d *DbusQueryObject) CollectArgs() []interface{} {
