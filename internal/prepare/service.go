@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fiffeek/hyprdynamicmonitors/internal/config"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/hyprconf"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/utils"
 	"github.com/sirupsen/logrus"
 )
@@ -37,6 +38,19 @@ func (s *Service) TruncateDestination() error {
 	contents, err := os.ReadFile(*file)
 	if err != nil {
 		return fmt.Errorf("cant read the %s destination file: %w", *file, err)
+	}
+
+	if s.cfg.Get().General.ConfigFormat() == hyprconf.FormatLua {
+		newContents, changed := hyprconf.EnableDisabledLuaMonitors(string(contents))
+		logrus.WithFields(logrus.Fields{"destination": *file, "rules": changed}).Info(
+			"Re-enabled disabled hl.monitor rules")
+		if changed == 0 {
+			return nil
+		}
+		if err := utils.WriteAtomic(*file, []byte(newContents)); err != nil {
+			return fmt.Errorf("cant write to %s destination file: %w", *file, err)
+		}
+		return nil
 	}
 
 	lines := strings.Split(string(contents), "\n")

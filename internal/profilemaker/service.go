@@ -14,6 +14,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/config"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/hypr"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/hyprconf"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/utils"
 	"github.com/sirupsen/logrus"
 )
@@ -91,6 +92,7 @@ func (s *Service) EditExisting(profileName string, currentMonitors []*hypr.Monit
 	templateData := map[string]any{
 		"Monitors":     currentMonitors,
 		"MonitorLines": s.ToHyprLines(currentMonitors),
+		"Comment":      hyprconf.CommentPrefix(s.format()),
 	}
 
 	var rendered bytes.Buffer
@@ -109,11 +111,6 @@ func (s *Service) EditExisting(profileName string, currentMonitors []*hypr.Monit
 // updateConfigFileWithContent reads the config file, finds TUI AUTO markers and replaces content between them,
 // or appends the content to the end if markers are not found
 func (s *Service) updateConfigFileWithContent(configFile, newContent string) error {
-	const (
-		startMarker = "# <<<<< TUI AUTO START"
-		endMarker   = "# <<<<< TUI AUTO END"
-	)
-
 	// nolint:gosec
 	existingContent, err := os.ReadFile(configFile)
 	if err != nil {
@@ -121,24 +118,45 @@ func (s *Service) updateConfigFileWithContent(configFile, newContent string) err
 			if err := utils.WriteAtomic(configFile, []byte(newContent)); err != nil {
 				return fmt.Errorf("cant write the config file: %w", err)
 			}
+			return nil
 		}
 		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	content := string(existingContent)
-	finalContent := s.newMethod(content, startMarker, endMarker, newContent)
+	finalContent := s.newMethod(content, newContent)
 	if err := utils.WriteAtomic(configFile, []byte(finalContent)); err != nil {
 		return fmt.Errorf("cant write new config: %w", err)
 	}
 	return nil
 }
 
-func (*Service) newMethod(content, startMarker, endMarker, newContent string) string {
-	startIdx := strings.Index(content, startMarker)
-	endIdx := strings.Index(content, endMarker)
+const (
+	tuiStartMarker = "<<<<< TUI AUTO START"
+	tuiEndMarker   = "<<<<< TUI AUTO END"
+)
+
+// findMarker returns the index and length of the first marker comment, accepting both the
+// hyprlang ("# ") and the Lua ("-- ") comment prefix so profiles keep working when the
+// configured format changes.
+func findMarker(content, marker string) (int, int) {
+	bestIdx, bestLen := -1, 0
+	for _, f := range hyprconf.AllFormats {
+		full := hyprconf.CommentPrefix(f) + marker
+		idx := strings.Index(content, full)
+		if idx != -1 && (bestIdx == -1 || idx < bestIdx) {
+			bestIdx, bestLen = idx, len(full)
+		}
+	}
+	return bestIdx, bestLen
+}
+
+func (*Service) newMethod(content, newContent string) string {
+	startIdx, _ := findMarker(content, tuiStartMarker)
+	endIdx, endMarkerLen := findMarker(content, tuiEndMarker)
 	if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
 		beforeMarker := content[:startIdx]
-		afterMarker := content[endIdx+len(endMarker):]
+		afterMarker := content[endIdx+endMarkerLen:]
 
 		if !strings.HasSuffix(beforeMarker, "\n") && beforeMarker != "" {
 			beforeMarker += "\n"
@@ -213,6 +231,7 @@ func (s *Service) render(currentMonitors hypr.MonitorSpecs, profile *config.Prof
 	templateData := map[string]any{
 		"Monitors":     currentMonitors,
 		"MonitorLines": s.ToHyprLines(currentMonitors),
+		"Comment":      hyprconf.CommentPrefix(s.format()),
 	}
 
 	var rendered bytes.Buffer
@@ -292,62 +311,74 @@ func (s *Service) prepare(profileName, profileFileLocation string,
 	return &profile, nil
 }
 
+// ToHyprLines renders one Hyprland monitor rule per monitor in the configured config format.
 func (s *Service) ToHyprLines(monitors hypr.MonitorSpecs) []string {
+	format := s.format()
 	lines := []string{}
-
 	for _, monitor := range monitors {
-		fields := []string{}
-
-		identifier := monitor.Name
-		if monitor.Description != "" {
-			identifier = "desc:" + utils.EscapeHyprDescription(monitor.Description)
-		}
-		line := "monitor=" + identifier
-		fields = append(fields, line)
-		if monitor.Disabled {
-			fields = append(fields, "disable")
-			lines = append(lines, strings.Join(fields, ","))
-			continue
-		}
-
-		fields = append(fields, fmt.Sprintf("%dx%d@%.5f", monitor.Width, monitor.Height, monitor.RefreshRate))
-		fields = append(fields, fmt.Sprintf("%dx%d", monitor.X, monitor.Y))
-		fields = append(fields, fmt.Sprintf("%.8f", monitor.Scale))
-		fields = append(fields, "transform")
-		// nolint:perfsprint
-		fields = append(fields, fmt.Sprintf("%d", monitor.Transform))
-		if monitor.Vrr {
-			fields = append(fields, "vrr")
-			fields = append(fields, "1")
-		} else {
-			fields = append(fields, "vrr")
-			fields = append(fields, "0")
-		}
-		if monitor.TenBitdepth {
-			fields = append(fields, "bitdepth")
-			fields = append(fields, "10")
-		}
-		if monitor.HasNonDefaultColorPreset() {
-			fields = append(fields, "cm")
-			fields = append(fields, monitor.ColorPreset)
-		}
-		if monitor.HDR() && monitor.SdrBrightness != 1.0 {
-			fields = append(fields, "sdrbrightness")
-			fields = append(fields, fmt.Sprintf("%.2f", monitor.SdrBrightness))
-		}
-		if monitor.HDR() && monitor.SdrSaturation != 1.0 {
-			fields = append(fields, "sdrsaturation")
-			fields = append(fields, fmt.Sprintf("%.2f", monitor.SdrSaturation))
-		}
-		if monitor.HasMirror() {
-			fields = append(fields, "mirror")
-			fields = append(fields, monitor.Mirror)
-		}
-
-		lines = append(lines, strings.Join(fields, ","))
+		rule := ToMonitorRule(monitor)
+		lines = append(lines, rule.Render(format))
 	}
 
 	logrus.Debugf("Monitors freeze: %v", lines)
 
 	return lines
+}
+
+func (s *Service) format() hyprconf.Format {
+	return s.cfg.Get().General.ConfigFormat()
+}
+
+// ToMonitorRule converts the monitor state into a persistent monitor rule.
+func ToMonitorRule(monitor *hypr.MonitorSpec) *hyprconf.MonitorRule {
+	rule := &hyprconf.MonitorRule{
+		Name:        monitor.Name,
+		Description: monitor.Description,
+		Disabled:    monitor.Disabled,
+	}
+	if monitor.Disabled {
+		return rule
+	}
+
+	rule.Mode = fmt.Sprintf("%dx%d@%.5f", monitor.Width, monitor.Height, monitor.RefreshRate)
+	rule.Position = fmt.Sprintf("%dx%d", monitor.X, monitor.Y)
+	rule.Scale = monitor.Scale
+	rule.Fields = append(rule.Fields, hyprconf.Field{
+		Key:   "transform",
+		Value: hyprconf.Int(monitor.Transform),
+	})
+	if monitor.Vrr {
+		rule.Fields = append(rule.Fields, hyprconf.Field{Key: "vrr", Value: hyprconf.Int(1)})
+	} else {
+		rule.Fields = append(rule.Fields, hyprconf.Field{Key: "vrr", Value: hyprconf.Int(0)})
+	}
+	if monitor.TenBitdepth {
+		rule.Fields = append(rule.Fields, hyprconf.Field{Key: "bitdepth", Value: hyprconf.Int(10)})
+	}
+	if monitor.HasNonDefaultColorPreset() {
+		rule.Fields = append(rule.Fields, hyprconf.Field{
+			Key:   "cm",
+			Value: hyprconf.String(monitor.ColorPreset),
+		})
+	}
+	if monitor.HDR() && monitor.SdrBrightness != 1.0 {
+		rule.Fields = append(rule.Fields, hyprconf.Field{
+			Key: "sdrbrightness", Value: hyprconf.Literal(
+				fmt.Sprintf("%.2f", monitor.SdrBrightness)),
+		})
+	}
+	if monitor.HDR() && monitor.SdrSaturation != 1.0 {
+		rule.Fields = append(rule.Fields, hyprconf.Field{
+			Key: "sdrsaturation", Value: hyprconf.Literal(
+				fmt.Sprintf("%.2f", monitor.SdrSaturation)),
+		})
+	}
+	if monitor.HasMirror() {
+		rule.Fields = append(rule.Fields, hyprconf.Field{
+			Key:   "mirror",
+			Value: hyprconf.String(monitor.Mirror),
+		})
+	}
+
+	return rule
 }

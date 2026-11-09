@@ -6,7 +6,7 @@ import (
 	"math"
 
 	"github.com/fiffeek/hyprdynamicmonitors/internal/hypr"
-	"github.com/fiffeek/hyprdynamicmonitors/internal/utils"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/hyprconf"
 	"github.com/sirupsen/logrus"
 )
 
@@ -491,37 +491,67 @@ func (m *MonitorSpec) ToHyprMonitors() (*hypr.MonitorSpec, error) {
 	return monitor, nil
 }
 
+// ToHypr renders the monitor as a hyprlang monitor keyword value (without "monitor=").
 func (m *MonitorSpec) ToHypr() string {
-	// desc can be empty, use the name as a fallback
-	identifier := m.Name
-	if m.Description != "" {
-		identifier = "desc:" + utils.EscapeHyprDescription(m.Description)
+	return m.ToMonitorRule().HyprlangValue()
+}
+
+// ToHyprConfig renders the monitor as a monitor rule in the given Hyprland config format.
+func (m *MonitorSpec) ToHyprConfig(format hyprconf.Format) string {
+	return m.ToMonitorRule().Render(format)
+}
+
+// ToMonitorRule converts the edited monitor into a format agnostic monitor rule.
+func (m *MonitorSpec) ToMonitorRule() *hyprconf.MonitorRule {
+	rule := &hyprconf.MonitorRule{
+		// desc can be empty, the name is used as a fallback
+		Name:        m.Name,
+		Description: m.Description,
+		Disabled:    m.Disabled,
 	}
 	if m.Disabled {
-		// nolint:perfsprint
-		return fmt.Sprintf("%s,disable", identifier)
+		return rule
 	}
-	line := fmt.Sprintf("%s,%dx%d@%.2f,%dx%d,%.8f,transform,%d", identifier, m.Width,
-		m.Height, m.RefreshRate, m.X, m.Y, m.Scale, m.HyprTransform())
+
+	rule.Mode = fmt.Sprintf("%dx%d@%.5f", m.Width, m.Height, m.RefreshRate)
+	rule.Position = fmt.Sprintf("%dx%d", m.X, m.Y)
+	rule.Scale = m.Scale
+	rule.Fields = append(rule.Fields, hyprconf.Field{
+		Key:   "transform",
+		Value: hyprconf.Int(m.HyprTransform()),
+	})
+	// always explicit, otherwise turning VRR off would fall back to the global misc:vrr setting
 	if m.Vrr {
-		line += ",vrr,1"
+		rule.Fields = append(rule.Fields, hyprconf.Field{Key: "vrr", Value: hyprconf.Int(1)})
+	} else {
+		rule.Fields = append(rule.Fields, hyprconf.Field{Key: "vrr", Value: hyprconf.Int(0)})
 	}
 	if m.Bitdepth != DefaultBitdepth {
-		line = fmt.Sprintf("%s,bitdepth,%s", line, m.Bitdepth.Value())
+		rule.Fields = append(rule.Fields, hyprconf.Field{
+			Key:   "bitdepth",
+			Value: hyprconf.Literal(m.Bitdepth.Value()),
+		})
 	}
 	if !m.ColorPreset.IsDefault() {
-		line = fmt.Sprintf("%s,cm,%s", line, m.ColorPreset.Value())
+		rule.Fields = append(rule.Fields, hyprconf.Field{
+			Key:   "cm",
+			Value: hyprconf.String(m.ColorPreset.Value()),
+		})
 	}
 	if m.SdrBrightness != 1.0 && m.ColorPreset.CanAdjustSdr() {
-		line = fmt.Sprintf("%s,sdrbrightness,%.2f", line, m.SdrBrightness)
+		rule.Fields = append(rule.Fields, hyprconf.Field{
+			Key: "sdrbrightness", Value: hyprconf.Literal(fmt.Sprintf("%.2f", m.SdrBrightness)),
+		})
 	}
 	if m.SdrSaturation != 1.0 && m.ColorPreset.CanAdjustSdr() {
-		line = fmt.Sprintf("%s,sdrsaturation,%.2f", line, m.SdrSaturation)
+		rule.Fields = append(rule.Fields, hyprconf.Field{
+			Key: "sdrsaturation", Value: hyprconf.Literal(fmt.Sprintf("%.2f", m.SdrSaturation)),
+		})
 	}
-	if m.Mirror != "none" {
-		line = fmt.Sprintf("%s,mirror,%s", line, m.Mirror)
+	if m.Mirror != "none" && m.Mirror != "" {
+		rule.Fields = append(rule.Fields, hyprconf.Field{Key: "mirror", Value: hyprconf.String(m.Mirror)})
 	}
-	return line
+	return rule
 }
 
 type MonitorRectangle struct {

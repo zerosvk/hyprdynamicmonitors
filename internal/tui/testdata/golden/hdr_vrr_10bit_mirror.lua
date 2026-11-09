@@ -1,0 +1,1 @@
+hl.monitor({ output = "HEADLESS-2", mode = "640x480@60.00000", position = "2680x0", scale = 1.25, transform = 3, vrr = 1, bitdepth = 10, cm = "hdr", sdrbrightness = 1.20, sdrsaturation = 0.95, mirror = "DP-1" })

@@ -1,5 +1,8 @@
 [general]
-destination = "$HOME/.config/hypr/monitors.conf"
+# load it from hyprland.lua with: pcall(require, "monitors")
+destination = "$HOME/.config/hypr/monitors.lua"
+# "lua" for hyprland.lua (Hyprland 0.55+), "hyprlang" for the legacy hyprland.conf
+hyprland_config_format = "lua"
 
 [power_events]
 

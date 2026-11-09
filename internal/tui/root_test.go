@@ -13,6 +13,7 @@ import (
 	"github.com/fiffeek/hyprdynamicmonitors/internal/config"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/hypr"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/power"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/hyprconf"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/profilemaker"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/testutils"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/tui"
@@ -748,6 +749,17 @@ func TestModel_Update_UserFlows(t *testing.T) {
 			monitorsData: defaultMonitorData,
 			runFor:       utils.JustPtr(500 * time.Millisecond),
 			steps:        []step{},
+		},
+
+		{
+			name:         "initial_lua",
+			cfg:          testutils.NewTestConfig(t).WithConfigFormat(hyprconf.FormatLua).Get(),
+			monitorsData: defaultMonitorData,
+			runFor:       utils.JustPtr(500 * time.Millisecond),
+			steps:        []step{},
+			validateSideEffects: func(_ *config.Config, m tui.Model) {
+				assert.Contains(t, m.View(), "vrr = 0 })", "hypr preview should render hl.monitor rules")
+			},
 		},
 
 		{

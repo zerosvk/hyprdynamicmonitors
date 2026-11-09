@@ -10,6 +10,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/config"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/hyprconf"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/utils"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
@@ -203,6 +204,14 @@ func (t *TestConfig) WithDestination(dest string) *TestConfig {
 		t.cfg.General = &config.GeneralSection{}
 	}
 	t.cfg.General.Destination = utils.StringPtr(dest)
+	return t
+}
+
+func (t *TestConfig) WithConfigFormat(format hyprconf.Format) *TestConfig {
+	if t.cfg.General == nil {
+		t.cfg.General = &config.GeneralSection{}
+	}
+	t.cfg.General.HyprlandConfigFormat = &format
 	return t
 }
 

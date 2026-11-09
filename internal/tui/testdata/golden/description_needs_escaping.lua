@@ -1,0 +1,1 @@
+hl.monitor({ output = "desc:Dell #1 \"Ultra\" C:\\path", mode = "640x480@60.00000", position = "2680x0", scale = 1, transform = 3, vrr = 0 })

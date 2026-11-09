@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/fiffeek/hyprdynamicmonitors/internal/hypr"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/hyprconf"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/testutils"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/tui"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/utils"
@@ -128,6 +129,28 @@ func Test__Types_ToHyprCommand(t *testing.T) {
 			},
 			golden: "golden/flip",
 		},
+		{
+			name:    "hdr_vrr_10bit_mirror",
+			fixture: "rotated.json",
+			after: func(m *tui.MonitorSpec) {
+				m.ToggleVRR()
+				m.NextBitdepth()
+				m.SetPreset(tui.HDRColorPreset)
+				m.SdrBrightness = 1.2
+				m.SdrSaturation = 0.95
+				m.SetMirror("DP-1")
+				m.Scale = 1.25
+			},
+			golden: "golden/hdr_vrr_10bit_mirror",
+		},
+		{
+			name:    "description_needs_escaping",
+			fixture: "rotated.json",
+			after: func(m *tui.MonitorSpec) {
+				m.Description = `Dell #1 "Ultra" C:\path`
+			},
+			golden: "golden/description_needs_escaping",
+		},
 	}
 
 	for _, tt := range tests {
@@ -146,6 +169,11 @@ func Test__Types_ToHyprCommand(t *testing.T) {
 			utils.WriteAtomic(file, []byte(hyprCommand))
 
 			testutils.AssertFixture(t, file, filepath.Join("testdata", tt.golden), *regenerate)
+
+			luaFile := filepath.Join(dir, tt.name+".lua")
+			//nolint:gosec
+			utils.WriteAtomic(luaFile, []byte(monitors[0].ToHyprConfig(hyprconf.FormatLua)))
+			testutils.AssertFixture(t, luaFile, filepath.Join("testdata", tt.golden+".lua"), *regenerate)
 		})
 	}
 }
