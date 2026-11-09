@@ -62,6 +62,7 @@ A full guide is available at [Dynamic Profile Modes](https://fiffeek.github.io/h
    * [Quick Start](#quick-start)
       * [Installation](#installation)
       * [Setup](#setup)
+      * [Hyprland config formats](#hyprland-config-formats)
    * [Documentation](#documentation)
    * [Examples](#examples)
    * [Runtime Requirements](#runtime-requirements)
@@ -114,18 +115,21 @@ hyprdynamicmonitors tui
 # For getting started see: https://hyprdynamicmonitors.filipmikina.com/docs/quickstart/tui/
 ```
 
-Then add to your `~/.config/hypr/hyprland.conf` (alternatively, see [Running with systemd](https://fiffeek.github.io/hyprdynamicmonitors/docs/advanced/systemd) guide):
+Then load the generated file from your `~/.config/hypr/hyprland.lua` (Hyprland 0.55+, see [Hyprland config formats](#hyprland-config-formats); alternatively, see [Running with systemd](https://fiffeek.github.io/hyprdynamicmonitors/docs/advanced/systemd) guide):
 
-```bash
-# Source the generated monitor configuration
-source = ~/.config/hypr/monitors.conf
+```lua
+-- Load the generated monitor configuration (~/.config/hypr/monitors.lua).
+-- pcall keeps the rest of the config working before the file exists.
+pcall(require, "monitors")
 
-# Run the daemon for automatic profile switching
-exec-once = hyprdynamicmonitors run
+-- Run the daemon for automatic profile switching
+hl.on("hyprland.start", function()
+    hl.exec_cmd("hyprdynamicmonitors run")
+end)
 
-# or use systemd instead
-# see: https://fiffeek.github.io/hyprdynamicmonitors/docs/advanced/systemd
-# systemctl --user enable --now hyprdynamicmonitors.service
+-- or use systemd instead
+-- see: https://fiffeek.github.io/hyprdynamicmonitors/docs/advanced/systemd
+-- systemctl --user enable --now hyprdynamicmonitors.service
 ```
 
 Ensure you're running `hyprdynamicmonitors prepare` prior to running Hyprland (see [the guide and the why](https://fiffeek.github.io/hyprdynamicmonitors/docs/advanced/prepare)):
@@ -135,6 +139,41 @@ hyprdynamicmonitors prepare && Hyprland
 # or use systemd
 # systemctl --user enable hyprdynamicmonitors-prepare.service
 ```
+
+### Hyprland config formats
+
+Hyprland 0.55 introduced the Lua config (`hyprland.lua`), and since 0.57 the legacy hyprlang
+config (`hyprland.conf`) and `hyprctl keyword` are gone. hyprdynamicmonitors writes monitor rules
+(profiles created by `freeze` and the TUI, TUI "apply", `prepare`) in the format chosen in `[general]`:
+
+```toml
+[general]
+# "lua" (default): hl.monitor({ output = "desc:...", mode = "...", ... }) rules,
+#                  destination defaults to ~/.config/hypr/monitors.lua
+# "hyprlang":      monitor=desc:...,mode,... lines for Hyprland <= 0.56 with hyprland.conf,
+#                  destination defaults to ~/.config/hypr/monitors.conf
+hyprland_config_format = "lua"
+destination = "$HOME/.config/hypr/monitors.lua"
+```
+
+When `hyprland_config_format` is not set, a `destination` ending in `.conf` keeps the hyprlang
+behaviour, so existing setups keep working. Hyprland's `require` only loads `.lua` files and
+watches them, so the generated file is reloaded automatically when it changes.
+
+Profile templates are plain text, so they have to be written in the syntax your Hyprland reads:
+
+```lua
+-- hyprconfigs/laptop.go.tmpl
+{{- $laptop := index .MonitorsByTag "laptop" }}
+hl.monitor({ output = "{{ $laptop.Name }}", mode = "2880x1920@120", position = "0x0", scale = 2 })
+hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })
+```
+
+To migrate an existing setup: move `hyprland.conf` to `hyprland.lua` (Hyprland's wiki has the
+full syntax), replace `source = ~/.config/hypr/monitors.conf` with `pcall(require, "monitors")`,
+point `destination` to `monitors.lua`, and rewrite each profile's `monitor=` lines as
+`hl.monitor({...})` calls (`monitor=NAME,disable` becomes `hl.monitor({ output = "NAME", disabled = true })`).
+The [`examples/`](examples) directory uses the Lua syntax.
 
 For detailed setup instructions, see the [Quick Start Guide](https://fiffeek.github.io/hyprdynamicmonitors/docs/category/quick-start).
 
