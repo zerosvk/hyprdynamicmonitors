@@ -22,7 +22,8 @@ var freezeCmd = &cobra.Command{
 	Long: `Freeze the current Hyprland monitor configuration and save it as a new profile template.
 
 This command captures your current monitor setup and creates two artifacts:
-1. A Go template file containing the Hyprland configuration
+1. A Go template file containing the Hyprland monitor rules, written in the format set by
+   general.hyprland_config_format (hl.monitor({...}) calls for "lua", monitor= lines for "hyprlang")
 2. A new profile entry in your configuration file that references this template
 
 TEMPLATE FILE:

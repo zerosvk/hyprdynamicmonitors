@@ -9,6 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/config"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/hyprconf"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/testutils"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/utils"
 	"github.com/stretchr/testify/assert"
@@ -297,28 +298,77 @@ func TestLoad(t *testing.T) {
 }
 
 func TestGeneralSectionValidate(t *testing.T) {
+	lua := hyprconf.FormatLua
+	hyprlang := hyprconf.FormatHyprlang
+	bogus := hyprconf.Format("toml")
 	tests := []struct {
-		name     string
-		general  *config.GeneralSection
-		expected string
+		name           string
+		general        *config.GeneralSection
+		expectedSuffix string
+		expectedFormat hyprconf.Format
+		wantErr        bool
 	}{
 		{
-			name:     "nil destination gets default",
-			general:  &config.GeneralSection{},
-			expected: "$HOME/.config/hypr/monitors.conf",
+			name:           "nil destination and format default to lua",
+			general:        &config.GeneralSection{},
+			expectedSuffix: ".config/hypr/monitors.lua",
+			expectedFormat: hyprconf.FormatLua,
 		},
 		{
-			name: "existing destination is preserved",
+			name:           "hyprlang format gets the conf default destination",
+			general:        &config.GeneralSection{HyprlandConfigFormat: &hyprlang},
+			expectedSuffix: ".config/hypr/monitors.conf",
+			expectedFormat: hyprconf.FormatHyprlang,
+		},
+		{
+			name: "existing conf destination is preserved and infers hyprlang",
 			general: &config.GeneralSection{
 				Destination: utils.StringPtr("/custom/path.conf"),
 			},
-			expected: "/custom/path.conf",
+			expectedSuffix: "/custom/path.conf",
+			expectedFormat: hyprconf.FormatHyprlang,
+		},
+		{
+			name: "existing lua destination infers lua",
+			general: &config.GeneralSection{
+				Destination: utils.StringPtr("/custom/path.lua"),
+			},
+			expectedSuffix: "/custom/path.lua",
+			expectedFormat: hyprconf.FormatLua,
+		},
+		{
+			name: "unknown extension falls back to lua",
+			general: &config.GeneralSection{
+				Destination: utils.StringPtr("/custom/monitors"),
+			},
+			expectedSuffix: "/custom/monitors",
+			expectedFormat: hyprconf.FormatLua,
+		},
+		{
+			name: "explicit format wins over the extension",
+			general: &config.GeneralSection{
+				Destination:          utils.StringPtr("/custom/path.conf"),
+				HyprlandConfigFormat: &lua,
+			},
+			expectedSuffix: "/custom/path.conf",
+			expectedFormat: hyprconf.FormatLua,
+		},
+		{
+			name:    "invalid format is rejected",
+			general: &config.GeneralSection{HyprlandConfigFormat: &bogus},
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.general.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected an error")
+				}
+				return
+			}
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
@@ -328,14 +378,12 @@ func TestGeneralSectionValidate(t *testing.T) {
 				return
 			}
 
-			if tt.name == "nil destination gets default" {
-				if !containsString(*tt.general.Destination, ".config/hypr/monitors.conf") {
-					t.Errorf("expected destination to contain default path, got '%s'", *tt.general.Destination)
-				}
-			} else {
-				if *tt.general.Destination != tt.expected {
-					t.Errorf("expected destination '%s', got '%s'", tt.expected, *tt.general.Destination)
-				}
+			if !strings.HasSuffix(*tt.general.Destination, tt.expectedSuffix) {
+				t.Errorf("expected destination to end with '%s', got '%s'",
+					tt.expectedSuffix, *tt.general.Destination)
+			}
+			if tt.general.ConfigFormat() != tt.expectedFormat {
+				t.Errorf("expected format '%s', got '%s'", tt.expectedFormat, tt.general.ConfigFormat())
 			}
 		})
 	}

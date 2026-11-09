@@ -2,22 +2,33 @@ package tui
 
 import (
 	"github.com/charmbracelet/lipgloss"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/config"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/hyprconf"
 )
 
 type HyprPreviewPane struct {
 	monitors []*MonitorSpec
+	cfg      *config.Config
 	clamp    bool
 	width    int
 	colors   *ColorsManager
 }
 
-func NewHyprPreviewPane(monitors []*MonitorSpec, colors *ColorsManager) *HyprPreviewPane {
+func NewHyprPreviewPane(monitors []*MonitorSpec, cfg *config.Config, colors *ColorsManager) *HyprPreviewPane {
 	return &HyprPreviewPane{
 		monitors: monitors,
+		cfg:      cfg,
 		width:    0,
 		clamp:    true,
 		colors:   colors,
 	}
+}
+
+func (h *HyprPreviewPane) format() hyprconf.Format {
+	if h.cfg == nil {
+		return hyprconf.DefaultFormat
+	}
+	return h.cfg.Get().General.ConfigFormat()
 }
 
 func (h *HyprPreviewPane) SetWidth(width int) {
@@ -38,8 +49,12 @@ func (h *HyprPreviewPane) View() string {
 		sections = append(sections, h.colors.TitleStyle().Render("Hyprland Config Preview"))
 	}
 
+	format := h.format()
 	for _, monitor := range h.monitors {
-		hyprCommand := "monitor = " + monitor.ToHypr()
+		hyprCommand := monitor.ToHyprConfig(format)
+		if format == hyprconf.FormatHyprlang {
+			hyprCommand = "monitor = " + monitor.ToHypr()
+		}
 		if h.clamp {
 			hyprCommand = ClampTextTo(hyprCommand, h.width)
 		}

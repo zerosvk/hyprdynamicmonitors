@@ -84,7 +84,7 @@ func NewModel(cfg *config.Config, hyprMonitors hypr.MonitorSpecs,
 		monitorsPreviewPane:       NewMonitorsPreviewPane(monitors, colors),
 		help:                      NewCustomHelp(colors),
 		header:                    NewHeader("HyprDynamicMonitors", state.viewModes, version, colors),
-		hyprPreviewPane:           NewHyprPreviewPane(monitors, colors),
+		hyprPreviewPane:           NewHyprPreviewPane(monitors, cfg, colors),
 		monitorEditor:             NewMonitorEditor(monitors),
 		monitorModes:              NewMonitorModeList(monitors, colors),
 		monitorMirrors:            NewMirrorList(monitors, colors),
@@ -430,7 +430,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		stateChanged = true
 	case ApplyEphemeralCommand:
 		logrus.Debug("Applying hypr settings")
-		cmds = append(cmds, m.hyprApply.ApplyCurrent(m.monitorEditor.GetMonitors()))
+		cmds = append(cmds, m.hyprApply.ApplyCurrent(m.monitorEditor.GetMonitors(), m.config.Get().General.ConfigFormat()))
 	case ToggleConfirmationPromptCommand:
 		logrus.Debug("Toggling confirmation prompt")
 		m.rootState.ToggleConfirmationPrompt()

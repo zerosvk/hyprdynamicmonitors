@@ -9,6 +9,7 @@ import (
 
 	"github.com/fiffeek/hyprdynamicmonitors/internal/config"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/hypr"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/hyprconf"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/profilemaker"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/testutils"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/utils"
@@ -89,6 +90,7 @@ func TestService_EditExisting(t *testing.T) {
 		profileName   string
 		expectError   bool
 		errorContains string
+		format        hyprconf.Format
 	}{
 		{
 			name:         "Replace content between existing markers",
@@ -139,6 +141,34 @@ func TestService_EditExisting(t *testing.T) {
 			expectedFile: "testdata/expected_markers_only.conf",
 			profileName:  "test-profile",
 		},
+		{
+			name:         "Lua: replace content between existing markers",
+			inputFile:    "testdata/lua/existing_config_with_markers.lua",
+			expectedFile: "testdata/lua/expected_replace_markers.lua",
+			profileName:  "test-profile",
+			format:       hyprconf.FormatLua,
+		},
+		{
+			name:         "Lua: repeated calls should not accumulate newlines",
+			inputFile:    "testdata/lua/existing_config_with_markers.lua",
+			expectedFile: "testdata/lua/expected_replace_markers.lua",
+			profileName:  "test-profile",
+			format:       hyprconf.FormatLua,
+		},
+		{
+			name:         "Lua: replace content between legacy hyprlang markers",
+			inputFile:    "testdata/markers_only.conf",
+			expectedFile: "testdata/lua/expected_replace_legacy_markers.lua",
+			profileName:  "test-profile",
+			format:       hyprconf.FormatLua,
+		},
+		{
+			name:         "Lua: append content when no markers exist",
+			inputFile:    "testdata/lua/existing_config_no_markers.lua",
+			expectedFile: "testdata/lua/expected_append_no_markers.lua",
+			profileName:  "test-profile",
+			format:       hyprconf.FormatLua,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -164,11 +194,14 @@ func TestService_EditExisting(t *testing.T) {
 					},
 				}
 
-				cfg = testutils.NewTestConfig(t).
+				testCfg := testutils.NewTestConfig(t).
 					WithProfiles(map[string]*config.Profile{
 						tc.profileName: profile,
-					}).
-					Get()
+					})
+				if tc.format != "" {
+					testCfg = testCfg.WithConfigFormat(tc.format)
+				}
+				cfg = testCfg.Get()
 			}
 
 			if tc.inputFile != "testdata/non_existent.conf" {

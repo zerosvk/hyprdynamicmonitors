@@ -104,6 +104,14 @@ func Test__Run_Prepare_Binary(t *testing.T) {
 			compareToGolden: "testdata/Test__Run_Prepare_Binary/golden/comments-matching.golden",
 		},
 		{
+			name: "lua re-enables disabled hl.monitor rules",
+			cfg: testutils.NewTestConfig(t).WithDestination(
+				filepath.Join(t.TempDir(), "monitors.lua")).
+				FillDefaults().WithDestinationContents("testdata/Test__Run_Prepare_Binary/fixtures/lua.lua"),
+			expectError:     false,
+			compareToGolden: "testdata/Test__Run_Prepare_Binary/golden/lua.golden",
+		},
+		{
 			name: "file with only whitespace",
 			cfg: testutils.NewTestConfig(t).FillDefaults().FillDefaults().WithDestinationContents(
 				"testdata/Test__Run_Prepare_Binary/fixtures/whitespace-only.conf"),
