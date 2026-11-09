@@ -6,6 +6,8 @@ sidebar_position: 6
 
 HyprDynamicMonitors supports custom user commands that are executed before and after profile configuration changes. These commands can be defined globally or per-profile.
 
+Callbacks run whenever a profile changes the destination file, both when the daemon applies a profile and when you apply one from the TUI.
+
 ## Global Callbacks
 
 Define commands that run for all profile changes:

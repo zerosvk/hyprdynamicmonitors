@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -42,8 +43,11 @@ var tuiCmd = &cobra.Command{
 			logrus.SetOutput(f)
 			defer f.Close()
 		} else {
-			// disable logging completely for tui unless run in the debug mode
+			// disable logging completely for tui unless run in the debug mode,
+			// anything written to the terminal would draw over the TUI;
+			// failures the user needs to see are shown in the TUI status instead
 			logrus.SetLevel(logrus.ErrorLevel)
+			logrus.SetOutput(io.Discard)
 		}
 
 		if runningUnderTest {
