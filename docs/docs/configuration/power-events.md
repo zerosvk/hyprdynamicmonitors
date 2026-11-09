@@ -81,12 +81,15 @@ You can add multiple match rules to listen for different events like `DeviceAdde
 
 ### Custom Signal Filters
 
-Filter received events by name to avoid noisy signals:
+Filter received events by name, and optionally by a substring of the signal body, to avoid noisy signals:
 
 ```toml title="~/.config/hyprdynamicmonitors/config.toml"
 [[power_events.dbus_signal_receive_filters]]
 name = "org.freedesktop.DBus.Properties.PropertiesChanged"
+body = "Online"  # Optional: only signals containing this in the body
 ```
+
+A signal is processed when any filter matches; a filter matches when its `name` (if set) equals the signal name and its `body` (if set) is contained in the signal body.
 
 ### Custom UPower Query
 

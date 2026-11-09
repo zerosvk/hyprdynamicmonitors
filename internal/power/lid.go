@@ -88,7 +88,13 @@ func (l *LidStateDetector) Listen() <-chan LidEvent {
 }
 
 func (l *LidStateDetector) shouldHandleSignal(sig *dbus.Signal) bool {
-	for _, filter := range l.cfg.Get().LidEvents.DbusSignalReceiveFilters {
+	return signalMatchesFilters(sig, l.cfg.Get().LidEvents.DbusSignalReceiveFilters)
+}
+
+// signalMatchesFilters returns true when any filter matches the signal, a filter matches
+// when its name (if set) equals the signal name and its body (if set) is contained in the signal body
+func signalMatchesFilters(sig *dbus.Signal, filters []*config.DbusSignalReceiveFilter) bool {
+	for _, filter := range filters {
 		if filter.Name != nil && *filter.Name != sig.Name {
 			logrus.WithFields(logrus.Fields{"filter": *filter.Name}).Debug("Filter not matching the name")
 			continue

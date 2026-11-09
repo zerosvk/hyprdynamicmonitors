@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 	"sync"
 
 	"github.com/fiffeek/hyprdynamicmonitors/internal/config"
@@ -150,12 +149,8 @@ func (p *PowerDetector) createMatchRules() [][]dbus.MatchOption {
 	return rules
 }
 
-func (p *PowerDetector) getExpectedSignalNames() []string {
-	result := []string{}
-	for _, filter := range p.cfg.Get().PowerEvents.DbusSignalReceiveFilters {
-		result = append(result, *filter.Name)
-	}
-	return result
+func (p *PowerDetector) shouldHandleSignal(sig *dbus.Signal) bool {
+	return signalMatchesFilters(sig, p.cfg.Get().PowerEvents.DbusSignalReceiveFilters)
 }
 
 func (p *PowerDetector) Reload(ctx context.Context) error {
@@ -238,7 +233,7 @@ func (p *PowerDetector) Run(ctx context.Context) error {
 				var currentState PowerState
 				var err error
 
-				if slices.Contains(p.getExpectedSignalNames(), signal.Name) {
+				if p.shouldHandleSignal(signal) {
 					logrus.Debug("Signal matches expected name, calling getCurrentState")
 					currentState, err = p.getCurrentState(ctx)
 					if err != nil {

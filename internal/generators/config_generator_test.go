@@ -310,3 +310,75 @@ func TestConfigGenerator_GenerateConfig_Template(t *testing.T) {
 	assert.NoError(t, err, "should not err on dry run")
 	testutils.AssertFileDoesNotExist(t, destination)
 }
+
+func TestConfigGenerator_BeforeChangeHook(t *testing.T) {
+	cfg := testutils.NewTestConfig(t).Get()
+	generator, err := generators.NewConfigGenerator(cfg)
+	require.NoError(t, err, "config generators should be able to init")
+
+	staticConfigPath, err := filepath.Abs("testdata/static_config.conf")
+	require.NoError(t, err)
+	monitors := []*hypr.MonitorSpec{
+		{Name: "eDP-1", ID: utils.IntPtr(0), Description: "Built-in Display"},
+	}
+
+	t.Run("static", func(t *testing.T) {
+		destination := filepath.Join(t.TempDir(), "hyprland.conf")
+		profile := matchers.NewMatchedProfile(&config.Profile{
+			ConfigFile: staticConfigPath,
+			ConfigType: utils.JustPtr(config.Static),
+		}, map[int]*config.RequiredMonitor{})
+		calls := 0
+		hook := func() { calls++ }
+
+		// dry run would link, the hook is called but nothing is written
+		changed, err := generator.GenerateConfigWithHook(cfg.Get(), profile, monitors,
+			power.ACPowerState, power.OpenedLidState, destination, true, hook)
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.Equal(t, 1, calls)
+		testutils.AssertFileDoesNotExist(t, destination)
+
+		changed, err = generator.GenerateConfigWithHook(cfg.Get(), profile, monitors,
+			power.ACPowerState, power.OpenedLidState, destination, false, hook)
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, 2, calls, "hook runs before linking")
+
+		changed, err = generator.GenerateConfigWithHook(cfg.Get(), profile, monitors,
+			power.ACPowerState, power.OpenedLidState, destination, false, hook)
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.Equal(t, 2, calls, "hook does not run when already linked")
+	})
+
+	t.Run("template", func(t *testing.T) {
+		templatePath := filepath.Join(t.TempDir(), "template.go.tmpl")
+		require.NoError(t, os.WriteFile(templatePath, []byte("monitor={{ .PowerState }}\n"), 0o600))
+		destination := filepath.Join(t.TempDir(), "hyprland.conf")
+		profile := matchers.NewMatchedProfile(&config.Profile{
+			ConfigFile: templatePath,
+			ConfigType: utils.JustPtr(config.Template),
+		}, map[int]*config.RequiredMonitor{})
+		calls := 0
+		hook := func() { calls++ }
+
+		changed, err := generator.GenerateConfigWithHook(cfg.Get(), profile, monitors,
+			power.ACPowerState, power.OpenedLidState, destination, false, hook)
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, 1, calls, "hook runs before the first write")
+
+		changed, err = generator.GenerateConfigWithHook(cfg.Get(), profile, monitors,
+			power.ACPowerState, power.OpenedLidState, destination, false, hook)
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.Equal(t, 1, calls, "hook does not run when the rendered content is unchanged")
+
+		changed, err = generator.GenerateConfigWithHook(cfg.Get(), profile, monitors,
+			power.BatteryPowerState, power.OpenedLidState, destination, false, hook)
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, 2, calls, "hook runs when the rendered content changes")
+	})
+}

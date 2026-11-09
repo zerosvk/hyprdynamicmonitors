@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -28,6 +29,36 @@ type Debouncer struct {
 	ch chan debounceMsg
 }
 
+// runningJobs tracks the cancel funcs of jobs that are currently executing
+type runningJobs struct {
+	mu      sync.Mutex
+	nextID  uint64
+	cancels map[uint64]context.CancelFunc
+}
+
+func (r *runningJobs) add(cancel context.CancelFunc) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID++
+	r.cancels[r.nextID] = cancel
+	return r.nextID
+}
+
+func (r *runningJobs) remove(id uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.cancels, id)
+}
+
+func (r *runningJobs) cancelAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, cancel := range r.cancels {
+		cancel()
+		delete(r.cancels, id)
+	}
+}
+
 func NewDebouncer() *Debouncer {
 	return &Debouncer{
 		ch: make(chan debounceMsg, 16),
@@ -35,7 +66,8 @@ func NewDebouncer() *Debouncer {
 }
 
 // Do schedules fn to run after delay. If another Do arrives before the timer
-// fires, the previous pending call is canceled and replaced by this one.
+// fires, the previous pending call is replaced by this one. A job that is already
+// running is not interrupted, it is only cancelled by Cancel or the parent context.
 // parent provides the context for the eventual job execution.
 func (d *Debouncer) Do(parent context.Context, delay time.Duration, fn DebounceFn) {
 	logrus.WithFields(logrus.Fields{"fun": GetFunctionName(fn), "delay": delay}).Debug(
@@ -57,11 +89,11 @@ func (d *Debouncer) Run(ctx context.Context) error {
 	eg.Go(func() error {
 		logrus.Debug("Running debouncer loop")
 		var (
-			timer         *time.Timer
-			tickC         <-chan time.Time
-			pending       DebounceFn
-			parent        context.Context
-			cancelPending context.CancelFunc
+			timer   *time.Timer
+			tickC   <-chan time.Time
+			pending DebounceFn
+			parent  context.Context
+			running = &runningJobs{cancels: map[uint64]context.CancelFunc{}}
 		)
 
 		// Helper to stop and drain the timer channel safely.
@@ -87,9 +119,7 @@ func (d *Debouncer) Run(ctx context.Context) error {
 			case <-ctx.Done():
 				logrus.Debug("Debouncer parent context cancelled")
 				// Parent canceled: clean up and exit loop.
-				if cancelPending != nil {
-					cancelPending()
-				}
+				running.cancelAll()
 				stopTimer()
 				return context.Cause(ctx)
 
@@ -98,12 +128,9 @@ func (d *Debouncer) Run(ctx context.Context) error {
 				switch m.op {
 				case opCancel:
 					logrus.Debug("Processing cancel operation")
-					// Drop any pending job.
-					if cancelPending != nil {
-						logrus.Debug("Cancelling pending job")
-						cancelPending()
-						cancelPending = nil
-					}
+					// Drop any pending job and stop the running ones.
+					logrus.Debug("Cancelling running jobs")
+					running.cancelAll()
 					logrus.Debug("Stopping timer for cancel")
 					stopTimer()
 					pending = nil
@@ -115,11 +142,8 @@ func (d *Debouncer) Run(ctx context.Context) error {
 						"delay": m.delay,
 						"fun":   GetFunctionName(m.fn),
 					}).Debug("Processing do operation")
-					if cancelPending != nil {
-						logrus.Debug("Cancelling previous pending job")
-						cancelPending()
-						cancelPending = nil
-					}
+					// a running job is left to finish, e.g. a user callback should not be killed
+					// halfway through; jobs are expected to serialize themselves if needed
 					logrus.Debug("Stopping previous timer")
 					stopTimer()
 					pending = m.fn
@@ -150,7 +174,7 @@ func (d *Debouncer) Run(ctx context.Context) error {
 				}
 
 				jobCtx, jobCancel := context.WithCancel(parent)
-				cancelPending = jobCancel
+				jobID := running.add(jobCancel)
 
 				logrus.WithFields(logrus.Fields{"fun": GetFunctionName(fn)}).Debug("Starting job execution")
 				// Run the job in the errgroup; if it returns error, group_ctx cancels
@@ -158,6 +182,7 @@ func (d *Debouncer) Run(ctx context.Context) error {
 				eg.Go(func() error {
 					defer func() {
 						logrus.WithFields(logrus.Fields{"fun": GetFunctionName(fn)}).Debug("Job execution completed")
+						running.remove(jobID)
 						jobCancel()
 					}()
 					select {

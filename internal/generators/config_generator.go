@@ -62,16 +62,32 @@ func (g *ConfigGenerator) ValidateTemplates() error {
 	return nil
 }
 
+// BeforeChangeFunc is called once a change to the destination is certain (or would be done in dry run),
+// right before the destination is written
+type BeforeChangeFunc func()
+
 // GenerateConfig either renders a template or links a file, and returns if any changed were done
 // this includes stating the config files to catch if the user modified them by hand (in linking scenario)
 func (g *ConfigGenerator) GenerateConfig(cfg *config.RawConfig, profile *matchers.MatchedProfile,
 	connectedMonitors []*hypr.MonitorSpec, powerState power.PowerState, lidState power.LidState, destination string, dryRun bool,
 ) (bool, error) {
+	return g.GenerateConfigWithHook(cfg, profile, connectedMonitors, powerState, lidState, destination, dryRun, nil)
+}
+
+// GenerateConfigWithHook is GenerateConfig that calls beforeChange (when not nil) only when the destination
+// changes, used to run pre apply callbacks only when something is actually applied
+func (g *ConfigGenerator) GenerateConfigWithHook(cfg *config.RawConfig, profile *matchers.MatchedProfile,
+	connectedMonitors []*hypr.MonitorSpec, powerState power.PowerState, lidState power.LidState, destination string, dryRun bool,
+	beforeChange BeforeChangeFunc,
+) (bool, error) {
+	if beforeChange == nil {
+		beforeChange = func() {}
+	}
 	switch *profile.Profile.ConfigType {
 	case config.Static:
-		return g.linkConfigFile(profile.Profile, destination, dryRun)
+		return g.linkConfigFile(profile.Profile, destination, dryRun, beforeChange)
 	case config.Template:
-		return g.renderTemplateFile(cfg, profile, connectedMonitors, powerState, lidState, destination, dryRun)
+		return g.renderTemplateFile(cfg, profile, connectedMonitors, powerState, lidState, destination, dryRun, beforeChange)
 	default:
 		return false, fmt.Errorf("unsupported config type: %v", *profile.Profile.ConfigType)
 	}
@@ -79,6 +95,7 @@ func (g *ConfigGenerator) GenerateConfig(cfg *config.RawConfig, profile *matcher
 
 func (g *ConfigGenerator) renderTemplateFile(cfg *config.RawConfig, profile *matchers.MatchedProfile,
 	connectedMonitors []*hypr.MonitorSpec, powerState power.PowerState, lidState power.LidState, destination string, dryRun bool,
+	beforeChange BeforeChangeFunc,
 ) (bool, error) {
 	templatePath := profile.Profile.ConfigFile
 
@@ -109,6 +126,8 @@ func (g *ConfigGenerator) renderTemplateFile(cfg *config.RawConfig, profile *mat
 			return false, nil
 		}
 	}
+
+	beforeChange()
 
 	if dryRun {
 		logrus.WithFields(utils.NewLogrusCustomFields(map[string]interface{}{
@@ -251,12 +270,20 @@ func (g *ConfigGenerator) createTemplateData(cfg *config.RawConfig, profile *mat
 	return data
 }
 
-func (g *ConfigGenerator) linkConfigFile(profile *config.Profile, destination string, dryRun bool) (bool, error) {
+func (g *ConfigGenerator) linkConfigFile(profile *config.Profile, destination string, dryRun bool,
+	beforeChange BeforeChangeFunc,
+) (bool, error) {
 	source := profile.ConfigFile
 	differentContents, err := g.compareSymlinks(destination, source, profile)
 	if err == nil {
+		// already linked, the linked file itself might have been edited
+		if differentContents {
+			beforeChange()
+		}
 		return differentContents, nil
 	}
+
+	beforeChange()
 
 	// dry run must not touch the destination, check it before removing anything
 	if dryRun {

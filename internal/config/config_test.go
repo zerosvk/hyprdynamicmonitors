@@ -1092,3 +1092,21 @@ func Test__ReadWriteSelf(t *testing.T) {
 
 	testutils.AssertFixture(t, cfgFile, "testdata/fixtures/minimal.toml", *regenerate)
 }
+
+func TestProfileValidate_ExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, "hyprconfigs"), 0o750))
+	profileFile := filepath.Join(home, "hyprconfigs", "laptop.conf")
+	require.NoError(t, os.WriteFile(profileFile, []byte(""), 0o600))
+
+	profile := &config.Profile{
+		Name:       "laptop",
+		ConfigFile: "~/hyprconfigs/laptop.conf",
+		Conditions: &config.ProfileCondition{
+			RequiredMonitors: []*config.RequiredMonitor{{Name: utils.StringPtr("eDP-1")}},
+		},
+	}
+	require.NoError(t, profile.Validate(t.TempDir()))
+	assert.Equal(t, profileFile, profile.ConfigFile)
+}

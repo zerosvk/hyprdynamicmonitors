@@ -45,6 +45,8 @@ type Service struct {
 	generator            *generators.ConfigGenerator
 	notificationsService *notifications.Service
 
+	// applyMu serializes profile applications coming from events, reloads and signals
+	applyMu          sync.Mutex
 	stateMu          sync.RWMutex
 	cachedMonitors   []*hypr.MonitorSpec
 	cachedPowerState power.PowerState
@@ -192,6 +194,9 @@ func (s *Service) updateAndReport(ctx context.Context) {
 }
 
 func (s *Service) UpdateOnce(ctx context.Context) error {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
 	s.stateMu.RLock()
 	monitors := s.cachedMonitors
 	powerState := s.cachedPowerState
@@ -231,17 +236,26 @@ func (s *Service) UpdateOnce(ctx context.Context) error {
 
 	logrus.WithFields(profileFields).Info("Using profile")
 
-	s.tryExec(ctx, matchedProfile.Profile.PreApplyExec, cfg.General.PreApplyExec, utils.PreExecLogID)
+	// pre apply callbacks only run when the destination is about to change,
+	// in dry run when it would change
+	willChange := false
+	runPreExec := func() {
+		willChange = true
+		s.tryExec(ctx, matchedProfile.Profile.PreApplyExec, cfg.General.PreApplyExec, utils.PreExecLogID)
+	}
 
 	destination := *cfg.General.Destination
-	changed, err := s.generator.GenerateConfig(cfg, matchedProfile, monitors, powerState,
-		lidState, destination, s.serviceConfig.DryRun)
+	changed, err := s.generator.GenerateConfigWithHook(cfg, matchedProfile, monitors, powerState,
+		lidState, destination, s.serviceConfig.DryRun, runPreExec)
 	if err != nil {
 		return fmt.Errorf("failed to generate config: %w", err)
 	}
+	if s.serviceConfig.DryRun {
+		changed = willChange
+	}
 
-	// if not changed and not running in dry run then exit early
-	if !changed && !s.serviceConfig.DryRun {
+	// if nothing changed then exit early
+	if !changed {
 		logrus.Info("Not sending notifications since the config has not been changed")
 		return nil
 	}

@@ -33,7 +33,7 @@ Profile-specific commands **override** global commands for that profile.
 
 ### pre_apply_exec
 
-Executed **before** the new monitor configuration is applied.
+Executed **before** the new monitor configuration is applied. Like `post_apply_exec`, it only runs when the destination actually changes, not on every monitor, power or lid event.
 
 Use cases:
 - Send notifications about upcoming changes

@@ -570,13 +570,11 @@ func (t *TUISection) Validate(configDirPath string) error {
 
 		t.Colors.SourceFile = utils.JustPtr(os.ExpandEnv(*t.Colors.SourceFile))
 
-		if strings.HasPrefix(*t.Colors.SourceFile, "~/") {
-			homeDir, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("cant get user home directory: %w", err)
-			}
-			t.Colors.SourceFile = utils.JustPtr(filepath.Join(homeDir, (*t.Colors.SourceFile)[2:]))
+		expanded, err := utils.ExpandHome(*t.Colors.SourceFile)
+		if err != nil {
+			return fmt.Errorf("cant expand home in %s: %w", *t.Colors.SourceFile, err)
 		}
+		t.Colors.SourceFile = utils.JustPtr(expanded)
 
 		absConfigFile, err := filepath.Abs(*t.Colors.SourceFile)
 		if err != nil {
@@ -870,6 +868,11 @@ func (p *Profile) Validate(configPath string) error {
 	}).Debug("Profile config file resolved")
 
 	p.ConfigFile = os.ExpandEnv(p.ConfigFile)
+	expanded, err := utils.ExpandHome(p.ConfigFile)
+	if err != nil {
+		return fmt.Errorf("cant expand home in %s: %w", p.ConfigFile, err)
+	}
+	p.ConfigFile = expanded
 	absConfigFile, err := filepath.Abs(p.ConfigFile)
 	if err != nil {
 		return fmt.Errorf("cant get absolute path to config file %s: %w", p.ConfigFile, err)
