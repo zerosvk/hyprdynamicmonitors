@@ -88,9 +88,13 @@ func (m *MonitorSpec) Validate() error {
 
 type MonitorSpecs []*MonitorSpec
 
+// ErrNoMonitors is returned when Hyprland reports no monitors at all,
+// e.g. when the only connected monitor is powered off and disconnects
+var ErrNoMonitors = errors.New("no monitors detected")
+
 func (m MonitorSpecs) Validate() error {
 	if len(m) == 0 {
-		return errors.New("no monitors detected")
+		return ErrNoMonitors
 	}
 
 	for _, monitor := range m {
@@ -145,7 +149,9 @@ func extractTypedHyprEvent(line string, eventType HyprEventType) (bool, *HyprEve
 
 	logrus.WithFields(logrus.Fields{"event": line, "as": eventType.Value()}).Debug("trying to parse event")
 
-	parts := strings.Split(after, ",")
+	// the description is the last field and can contain commas itself,
+	// e.g. "Tatung Company of America, Inc. ..."
+	parts := strings.SplitN(after, ",", 3)
 	if len(parts) != 3 {
 		return done, nil, fmt.Errorf("cant parse event %s", after)
 	}
