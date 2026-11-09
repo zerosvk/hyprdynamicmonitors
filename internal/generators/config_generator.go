@@ -258,18 +258,20 @@ func (g *ConfigGenerator) linkConfigFile(profile *config.Profile, destination st
 		return differentContents, nil
 	}
 
-	if _, err := os.Stat(destination); err == nil || !os.IsNotExist(err) {
-		if err := os.Remove(destination); err != nil {
-			return false, fmt.Errorf("failed to remove existing config: %w", err)
-		}
-	}
-
+	// dry run must not touch the destination, check it before removing anything
 	if dryRun {
 		logrus.WithFields(utils.NewLogrusCustomFields(map[string]interface{}{
 			"config_file": source, "destination": destination,
 		}).WithLogID(utils.DryRunSymlinkLogID)).Info(
 			"[DRY RUN] Would create a symlink but running in dry run")
 		return false, nil
+	}
+
+	// Lstat so that a dangling symlink is removed as well
+	if _, err := os.Lstat(destination); err == nil || !os.IsNotExist(err) {
+		if err := os.Remove(destination); err != nil {
+			return false, fmt.Errorf("failed to remove existing config: %w", err)
+		}
 	}
 
 	if err := os.Symlink(source, destination); err != nil {

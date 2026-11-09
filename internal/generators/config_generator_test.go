@@ -84,6 +84,94 @@ func TestConfigGenerator_GenerateConfig_Static(t *testing.T) {
 	testutils.AssertFileDoesNotExist(t, destination)
 }
 
+func TestConfigGenerator_GenerateConfig_StaticDryRunKeepsDestination(t *testing.T) {
+	cfg := testutils.NewTestConfig(t).Get()
+	generator, err := generators.NewConfigGenerator(cfg)
+	require.NoError(t, err, "config generators should be able to init")
+
+	staticConfigPath, err := filepath.Abs("testdata/static_config.conf")
+	require.NoError(t, err)
+	profile := &config.Profile{
+		ConfigFile: staticConfigPath,
+		ConfigType: utils.JustPtr(config.Static),
+	}
+	matchedProfile := matchers.NewMatchedProfile(profile, map[int]*config.RequiredMonitor{})
+	monitors := []*hypr.MonitorSpec{
+		{Name: "eDP-1", ID: utils.IntPtr(0), Description: "Built-in Display"},
+	}
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, destination string)
+	}{
+		{
+			name: "regular_file",
+			setup: func(t *testing.T, destination string) {
+				require.NoError(t, os.WriteFile(destination, []byte("user content"), 0o600))
+			},
+		},
+		{
+			name: "symlink_to_another_file",
+			setup: func(t *testing.T, destination string) {
+				other := filepath.Join(filepath.Dir(destination), "other.conf")
+				require.NoError(t, os.WriteFile(other, []byte("other"), 0o600))
+				require.NoError(t, os.Symlink(other, destination))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			destination := filepath.Join(t.TempDir(), "hyprland.conf")
+			tt.setup(t, destination)
+			before, err := os.Lstat(destination)
+			require.NoError(t, err)
+			//nolint:gosec
+			beforeContents, err := os.ReadFile(destination)
+			require.NoError(t, err)
+
+			changed, err := generator.GenerateConfig(cfg.Get(), matchedProfile, monitors,
+				power.ACPowerState, power.OpenedLidState, destination, true)
+			require.NoError(t, err, "no error should be thrown on dry run")
+			assert.False(t, changed, "nothing should change on dry run")
+
+			after, err := os.Lstat(destination)
+			require.NoError(t, err, "dry run must not remove the destination")
+			assert.Equal(t, before.Mode(), after.Mode(), "dry run must not change the destination type")
+			//nolint:gosec
+			afterContents, err := os.ReadFile(destination)
+			require.NoError(t, err)
+			assert.Equal(t, beforeContents, afterContents, "dry run must not change the destination contents")
+		})
+	}
+}
+
+func TestConfigGenerator_GenerateConfig_StaticReplacesDanglingSymlink(t *testing.T) {
+	cfg := testutils.NewTestConfig(t).Get()
+	generator, err := generators.NewConfigGenerator(cfg)
+	require.NoError(t, err, "config generators should be able to init")
+
+	staticConfigPath, err := filepath.Abs("testdata/static_config.conf")
+	require.NoError(t, err)
+	profile := &config.Profile{
+		ConfigFile: staticConfigPath,
+		ConfigType: utils.JustPtr(config.Static),
+	}
+	matchedProfile := matchers.NewMatchedProfile(profile, map[int]*config.RequiredMonitor{})
+
+	tempDir := t.TempDir()
+	destination := filepath.Join(tempDir, "hyprland.conf")
+	require.NoError(t, os.Symlink(filepath.Join(tempDir, "deleted.conf"), destination))
+
+	changed, err := generator.GenerateConfig(cfg.Get(), matchedProfile, nil,
+		power.ACPowerState, power.OpenedLidState, destination, false)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	target, err := os.Readlink(destination)
+	require.NoError(t, err)
+	assert.Equal(t, staticConfigPath, target)
+}
+
 func TestConfigGenerator_GenerateConfig_Template(t *testing.T) {
 	cfg := testutils.NewTestConfig(t).WithStaticTemplateValues(map[string]string{
 		"overwritten_value": "this_shall_be_overwritten",
