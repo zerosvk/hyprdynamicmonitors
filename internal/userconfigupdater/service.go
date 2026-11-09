@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"sync"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/fiffeek/hyprdynamicmonitors/internal/matchers"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/notifications"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/power"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/profileapplier"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/utils"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
@@ -44,8 +44,9 @@ type Service struct {
 	serviceConfig        *Config
 	generator            *generators.ConfigGenerator
 	notificationsService *notifications.Service
+	applier              *profileapplier.Applier
 
-	// applyMu serializes profile applications coming from events, reloads and signals
+	// applyMu serializes matching and applying coming from events, reloads and signals
 	applyMu          sync.Mutex
 	stateMu          sync.RWMutex
 	cachedMonitors   []*hypr.MonitorSpec
@@ -73,6 +74,7 @@ func NewService(cfg *config.Config, monitorDetector IMonitorDetector,
 		debouncer:            utils.NewDebouncer(),
 		notificationsService: notifications,
 		lidDetector:          lidDetector,
+		applier:              profileapplier.New(generator, notifications, svcCfg.DryRun),
 	}
 }
 
@@ -236,63 +238,9 @@ func (s *Service) UpdateOnce(ctx context.Context) error {
 
 	logrus.WithFields(profileFields).Info("Using profile")
 
-	// pre apply callbacks only run when the destination is about to change,
-	// in dry run when it would change
-	willChange := false
-	runPreExec := func() {
-		willChange = true
-		s.tryExec(ctx, matchedProfile.Profile.PreApplyExec, cfg.General.PreApplyExec, utils.PreExecLogID)
-	}
-
-	destination := *cfg.General.Destination
-	changed, err := s.generator.GenerateConfigWithHook(cfg, matchedProfile, monitors, powerState,
-		lidState, destination, s.serviceConfig.DryRun, runPreExec)
-	if err != nil {
-		return fmt.Errorf("failed to generate config: %w", err)
-	}
-	if s.serviceConfig.DryRun {
-		changed = willChange
-	}
-
-	// if nothing changed then exit early
-	if !changed {
-		logrus.Info("Not sending notifications since the config has not been changed")
-		return nil
-	}
-
-	s.tryExec(ctx, matchedProfile.Profile.PostApplyExec, cfg.General.PostApplyExec, utils.PostExecLogID)
-
-	if err := s.notificationsService.NotifyProfileApplied(matchedProfile.Profile, s.serviceConfig.DryRun); err != nil {
-		logrus.WithFields(profileFields).WithError(err).Error("swallowing notification error")
+	if _, err := s.applier.Apply(ctx, cfg, matchedProfile, monitors, powerState, lidState); err != nil {
+		return fmt.Errorf("cant apply profile %s: %w", matchedProfile.Profile.Name, err)
 	}
 
 	return nil
-}
-
-func (s *Service) tryExec(ctx context.Context, command, fallbackCommand *string, logID utils.LogID) {
-	// fallback on a default command when it's not provided for a profile
-	if command == nil || *command == "" {
-		command = fallbackCommand
-	}
-	// if it's still empty then nothing to be done
-	if command == nil || *command == "" {
-		return
-	}
-	// if running with dry run then just output the commands
-	if s.serviceConfig.DryRun {
-		logrus.WithFields(utils.NewLogrusCustomFields(map[string]interface{}{
-			"command": *command,
-			"order":   logID,
-		}).WithLogID(utils.DryRunExedLogID)).
-			Info("[DRY RUN] Would run command")
-		return
-	}
-
-	logrus.WithFields(
-		utils.NewLogrusCustomFields(logrus.Fields{"command": *command}).WithLogID(logID)).Info("Executing user callback")
-	// nolint:gosec
-	out, err := exec.CommandContext(ctx, "bash", "-c", *command).CombinedOutput()
-	if err != nil {
-		logrus.Errorf("error %v while executing %s output %s, continuing as normal", err, *command, string(out))
-	}
 }

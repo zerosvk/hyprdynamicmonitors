@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,7 +15,9 @@ import (
 	"github.com/fiffeek/hyprdynamicmonitors/internal/hypr"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/hyprconf"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/matchers"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/notifications"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/power"
+	"github.com/fiffeek/hyprdynamicmonitors/internal/profileapplier"
 	"github.com/fiffeek/hyprdynamicmonitors/internal/profilemaker"
 	"github.com/sirupsen/logrus"
 )
@@ -22,6 +25,9 @@ import (
 type HyprApply struct {
 	profileMaker *profilemaker.Service
 	generator    *generators.ConfigGenerator
+	// applier is created on first use, it needs the config for notifications
+	applier     *profileapplier.Applier
+	applierOnce sync.Once
 }
 
 func NewHyprApply(profileMaker *profilemaker.Service, generator *generators.ConfigGenerator) *HyprApply {
@@ -111,7 +117,19 @@ func (h *HyprApply) GenerateThroughHDM(cfg *config.Config, profile *matchers.Mat
 	if err != nil {
 		return OperationStatusCmd(OperationNameHydrate, err)
 	}
-	destination := *cfg.Get().General.Destination
-	_, err = h.generator.GenerateConfig(cfg.Get(), profile, hyprMonitors, powerState, lidState, destination, false)
-	return OperationStatusCmd(OperationNameHydrate, err)
+	h.applierOnce.Do(func() {
+		h.applier = profileapplier.New(h.generator, notifications.NewService(cfg), false)
+	})
+	applier := h.applier
+	rawCfg := cfg.Get()
+	// same as the daemon: callbacks and the notification run when the destination changes;
+	// the callbacks can take a while, so this runs as a command and not inside Update
+	return func() tea.Msg {
+		res, err := applier.Apply(context.Background(), rawCfg, profile, hyprMonitors, powerState, lidState)
+		if err == nil && res.CallbackErr != nil {
+			// the config was written, tell the user that their callback did not work
+			err = fmt.Errorf("config written but %w", res.CallbackErr)
+		}
+		return OperationStatusCmd(OperationNameHydrate, err)()
+	}
 }
