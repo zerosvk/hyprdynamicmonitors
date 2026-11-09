@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"text/template"
 	"time"
@@ -294,15 +295,16 @@ func (g *ConfigGenerator) linkConfigFile(profile *config.Profile, destination st
 		return false, nil
 	}
 
-	// Lstat so that a dangling symlink is removed as well
-	if _, err := os.Lstat(destination); err == nil || !os.IsNotExist(err) {
-		if err := os.Remove(destination); err != nil {
-			return false, fmt.Errorf("failed to remove existing config: %w", err)
-		}
+	// create the link under a temporary name and rename it over the destination,
+	// so hyprland never sees a missing config between removing the old one and linking
+	tmpLink := filepath.Join(filepath.Dir(destination),
+		fmt.Sprintf(".%s.hdm-%d-%d.tmp", filepath.Base(destination), os.Getpid(), time.Now().UnixNano()))
+	if err := os.Symlink(source, tmpLink); err != nil {
+		return false, fmt.Errorf("failed to create symlink from %s to %s: %w", source, tmpLink, err)
 	}
-
-	if err := os.Symlink(source, destination); err != nil {
-		return false, fmt.Errorf("failed to create symlink from %s to %s: %w", source, destination, err)
+	if err := os.Rename(tmpLink, destination); err != nil {
+		_ = os.Remove(tmpLink)
+		return false, fmt.Errorf("failed to replace %s with a symlink to %s: %w", destination, source, err)
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -330,7 +332,8 @@ func (g *ConfigGenerator) compareSymlinks(destination, source string, profile *c
 		return false, fmt.Errorf("cant readlink %s: %w", destination, err)
 	}
 	if target == source {
-		sourceFileInfo, err := os.Lstat(source)
+		// Stat follows a symlinked profile file so edits to its target are detected
+		sourceFileInfo, err := os.Stat(source)
 		if err != nil {
 			return false, fmt.Errorf("cant stat %s: %w", source, err)
 		}

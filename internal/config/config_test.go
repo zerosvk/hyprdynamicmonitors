@@ -165,7 +165,7 @@ func TestLoad(t *testing.T) {
 			name:          "invalid - scoring value zero",
 			configFile:    "invalid_scoring_zero.toml",
 			expectError:   true,
-			errorContains: "score needs to be > 1",
+			errorContains: "score needs to be >= 1",
 		},
 		{
 			name:          "invalid - bad power state",

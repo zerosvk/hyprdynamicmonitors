@@ -141,7 +141,8 @@ func (l *LidStateDetector) Reload(ctx context.Context) error {
 	defer l.stateMu.Unlock()
 	rules := l.createMatchRules()
 	if reflect.DeepEqual(rules, l.dbusMatchOptions) {
-		logrus.Debug("power events rules match, nothing to be done")
+		logrus.Debug("dbus match rules unchanged, nothing to be done")
+		return nil
 	}
 
 	for _, ruleSet := range l.dbusMatchOptions {

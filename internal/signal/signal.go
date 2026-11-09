@@ -61,7 +61,8 @@ func (h *Handler) Run(ctx context.Context) error {
 
 	eg.Go(func() error {
 		logrus.Debug("Signal handler goroutine started")
-		defer close(h.sigChan)
+		// sigChan is not closed: signal.Stop may run after this goroutine exits and
+		// a signal arriving in between would panic on a send to a closed channel
 		for {
 			select {
 			case sig := <-h.sigChan:

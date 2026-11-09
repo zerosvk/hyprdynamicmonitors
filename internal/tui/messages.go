@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -366,7 +367,12 @@ func openEditor(file string) tea.Cmd {
 	if editor == "" {
 		editor = "vim"
 	}
-	c := exec.Command(editor, file) //nolint:gosec,noctx
+	// $EDITOR can carry arguments, e.g. "code --wait"
+	args := strings.Fields(editor)
+	if len(args) == 0 {
+		args = []string{"vim"}
+	}
+	c := exec.Command(args[0], append(args[1:], file)...) //nolint:gosec,noctx
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorFinishedMsg{err}
 	})

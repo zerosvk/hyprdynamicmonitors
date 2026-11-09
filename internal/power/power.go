@@ -163,7 +163,8 @@ func (p *PowerDetector) Reload(ctx context.Context) error {
 	defer p.stateMu.Unlock()
 	rules := p.createMatchRules()
 	if reflect.DeepEqual(rules, p.dbusMatchOptions) {
-		logrus.Debug("power events rules match, nothing to be done")
+		logrus.Debug("dbus match rules unchanged, nothing to be done")
+		return nil
 	}
 
 	for _, ruleSet := range p.dbusMatchOptions {

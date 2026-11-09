@@ -216,6 +216,27 @@ var reservedTemplateVariables = map[string]bool{
 	"PowerState":    true,
 }
 
+// shadowedTemplateVariables are also set by the generator, user values with these keys
+// replace them; this is only warned about so that existing configs keep loading
+var shadowedTemplateVariables = map[string]bool{
+	"RequiredMonitors": true,
+	"ExtraMonitors":    true,
+	"LidState":         true,
+}
+
+func validateTemplateValues(values map[string]string) error {
+	for key := range values {
+		if _, ok := reservedTemplateVariables[key]; ok {
+			return errors.New("key " + key + " cant be used since it is a reserved keyword")
+		}
+		if _, ok := shadowedTemplateVariables[key]; ok {
+			logrus.WithField("key", key).Warn(
+				"static_template_values key overrides the built-in template variable with the same name")
+		}
+	}
+	return nil
+}
+
 type ConfigFileType int
 
 const (
@@ -540,10 +561,8 @@ func (c *RawConfig) Validate() error {
 		return fmt.Errorf("hot reload section validation failed: %w", err)
 	}
 
-	for key := range c.StaticTemplateValues {
-		if _, ok := reservedTemplateVariables[key]; ok {
-			return errors.New("key " + key + " cant be used since it is a reserved keyword")
-		}
+	if err := validateTemplateValues(c.StaticTemplateValues); err != nil {
+		return err
 	}
 
 	if c.TUISection == nil {
@@ -815,25 +834,24 @@ func (g *GeneralSection) Validate() error {
 }
 
 func (s *ScoringSection) Validate() error {
-	defaultScore := 1
-
+	// separate pointers per field so that changing one score never changes the others
 	if s.NameMatch == nil {
-		s.NameMatch = &defaultScore
+		s.NameMatch = utils.IntPtr(1)
 	}
 	if s.DescriptionMatch == nil {
-		s.DescriptionMatch = &defaultScore
+		s.DescriptionMatch = utils.IntPtr(1)
 	}
 	if s.PowerStateMatch == nil {
-		s.PowerStateMatch = &defaultScore
+		s.PowerStateMatch = utils.IntPtr(1)
 	}
 	if s.LidStateMatch == nil {
-		s.LidStateMatch = &defaultScore
+		s.LidStateMatch = utils.IntPtr(1)
 	}
 
 	fields := []int{*s.DescriptionMatch, *s.NameMatch, *s.PowerStateMatch, *s.LidStateMatch}
 	for _, field := range fields {
 		if 1 > field {
-			return errors.New("scoring section validation failed, score needs to be > 1")
+			return errors.New("scoring section validation failed, score needs to be >= 1")
 		}
 	}
 
@@ -900,10 +918,8 @@ func (p *Profile) Validate(configPath string) error {
 		return fmt.Errorf("conditions validation failed: %w", err)
 	}
 
-	for key := range p.StaticTemplateValues {
-		if _, ok := reservedTemplateVariables[key]; ok {
-			return errors.New("key " + key + " cant be used since it is a reserved keyword")
-		}
+	if err := validateTemplateValues(p.StaticTemplateValues); err != nil {
+		return err
 	}
 
 	return nil

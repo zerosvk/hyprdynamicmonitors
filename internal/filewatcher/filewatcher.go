@@ -110,12 +110,17 @@ func (s *Service) addWatchedPaths(paths []string) error {
 
 func (s *Service) removeCurrentlyTrackedPaths() error {
 	logrus.Debug("Removing currently tracked paths")
+	configDir := s.cfg.Get().ConfigDirPath
 	for path := range s.watchedPaths {
-		if _, ok := s.watchedPaths[path]; !ok {
+		// the config dir is watched for the lifetime of the service (ensureConfigPathIsTracked),
+		// a profile living next to the config must not remove that watch
+		if path == configDir {
+			delete(s.watchedPaths, path)
 			continue
 		}
+		// a watch can already be gone, e.g. when the directory was deleted
 		if err := s.watcher.Remove(path); err != nil &&
-			errors.Is(err, fsnotify.ErrNonExistentWatch) {
+			!errors.Is(err, fsnotify.ErrNonExistentWatch) {
 			return fmt.Errorf("cant remove %s from watcher: %w", path, err)
 		}
 		delete(s.watchedPaths, path)

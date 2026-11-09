@@ -382,3 +382,50 @@ func TestConfigGenerator_BeforeChangeHook(t *testing.T) {
 		assert.Equal(t, 2, calls, "hook runs when the rendered content changes")
 	})
 }
+
+func TestConfigGenerator_StaticReplaceIsClean(t *testing.T) {
+	cfg := testutils.NewTestConfig(t).Get()
+	generator, err := generators.NewConfigGenerator(cfg)
+	require.NoError(t, err)
+
+	tempDir := t.TempDir()
+	realFile := filepath.Join(tempDir, "real.conf")
+	require.NoError(t, os.WriteFile(realFile, []byte("monitor=,preferred,auto,1"), 0o600))
+	// the profile file is itself a symlink, e.g. into a dotfiles repo
+	profileFile := filepath.Join(tempDir, "profile.conf")
+	require.NoError(t, os.Symlink(realFile, profileFile))
+
+	destDir := t.TempDir()
+	destination := filepath.Join(destDir, "monitors.conf")
+	require.NoError(t, os.WriteFile(destination, []byte("user content"), 0o600))
+
+	profile := matchers.NewMatchedProfile(&config.Profile{
+		ConfigFile: profileFile,
+		ConfigType: utils.JustPtr(config.Static),
+	}, map[int]*config.RequiredMonitor{})
+
+	changed, err := generator.GenerateConfig(cfg.Get(), profile, nil,
+		power.ACPowerState, power.OpenedLidState, destination, false)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	target, err := os.Readlink(destination)
+	require.NoError(t, err)
+	assert.Equal(t, profileFile, target)
+
+	entries, err := os.ReadDir(destDir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no temporary files should be left next to the destination")
+
+	changed, err = generator.GenerateConfig(cfg.Get(), profile, nil,
+		power.ACPowerState, power.OpenedLidState, destination, false)
+	require.NoError(t, err)
+	assert.False(t, changed)
+
+	// editing the file behind the symlinked profile is detected
+	future := time.Now().Add(time.Hour)
+	require.NoError(t, os.Chtimes(realFile, future, future))
+	changed, err = generator.GenerateConfig(cfg.Get(), profile, nil,
+		power.ACPowerState, power.OpenedLidState, destination, false)
+	require.NoError(t, err)
+	assert.True(t, changed, "an edit behind a symlinked profile file should be detected")
+}
