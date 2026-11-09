@@ -179,3 +179,28 @@ func TestCondFunction(t *testing.T) {
 		})
 	}
 }
+
+func TestPowerSectionValidate_InfersPowerLineOnlyWhenNeeded(t *testing.T) {
+	origRunCmd := utils.GetRunCmd()
+	defer utils.SetRunCmd(origRunCmd)
+	calls := 0
+	utils.SetRunCmd(func(ctx context.Context, name string, args ...string) (string, error) {
+		calls++
+		return "/org/freedesktop/UPower/devices/line_power_AC", nil
+	})
+
+	explicit := &config.PowerSection{
+		DbusSignalMatchRules: []*config.DbusSignalMatchRule{
+			{ObjectPath: utils.StringPtr("/org/freedesktop/UPower/devices/line_power_X")},
+		},
+		DbusQueryObject: &config.DbusQueryObject{Path: "/org/freedesktop/UPower/devices/line_power_X"},
+	}
+	require.NoError(t, explicit.Validate())
+	assert.Equal(t, 0, calls, "upower should not be queried when paths are configured")
+
+	defaults := &config.PowerSection{}
+	require.NoError(t, defaults.Validate())
+	assert.Equal(t, 1, calls, "upower should be queried once for the defaults")
+	assert.Equal(t, "/org/freedesktop/UPower/devices/line_power_AC", defaults.DbusQueryObject.Path)
+	assert.Equal(t, "/org/freedesktop/UPower/devices/line_power_AC", *defaults.DbusSignalMatchRules[0].ObjectPath)
+}

@@ -90,29 +90,34 @@ func (h *IPC) RunEventLoop(ctx context.Context) error {
 
 			line := scanner.Text()
 			found, event, err := extractHyprEvent(line)
-			if err != nil {
-				return fmt.Errorf("scanner gave unknown event: %w", err)
-			}
-			// if event was not found, skip
-			if !found {
+			switch {
+			case err != nil:
+				// only monitor events are parsed, so this is a monitor event with an unexpected
+				// payload; the payload is not needed since the state is refetched below
+				logrus.WithError(err).WithField("event", line).Warn(
+					"Cant parse monitor event payload, refreshing monitors anyway")
+			case !found:
 				continue
-			}
-			// skip updates for non monitor related events
-			if !slices.Contains([]HyprEventType{MonitorAdded, MonitorRemoved}, event.Type) {
+			case !slices.Contains([]HyprEventType{MonitorAdded, MonitorRemoved}, event.Type):
+				// skip updates for non monitor related events
 				continue
 			}
 
 			// refetch the current state, it's unknown whether monitorremoved
 			// event means disabled or physically removed
 			monitors, err := h.queryConnectedMonitors(ctx)
+			if errors.Is(err, ErrNoMonitors) {
+				// keep the last known state and wait for a monitor to come back
+				logrus.Warn("Hyprland reports no monitors, keeping the current configuration")
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("cant get monitors spec: %w", err)
+			}
 
 			h.mu.Lock()
 			h.monitors = monitors
 			h.mu.Unlock()
-
-			if err != nil {
-				return fmt.Errorf("cant get monitors spec: %w", err)
-			}
 			if reflect.DeepEqual(monitors, lastSent) {
 				logrus.Debug("Monitors are unchanged between now and the last sent value, skipping send")
 				continue

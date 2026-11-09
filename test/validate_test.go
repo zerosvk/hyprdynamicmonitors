@@ -92,7 +92,7 @@ func Test_Validate_InvalidConfigs(t *testing.T) {
 		{
 			name:          "negative scoring",
 			configFile:    "negative_scoring.toml",
-			expectedError: "score needs to be > 1",
+			expectedError: "score needs to be >= 1",
 		},
 		{
 			name:          "invalid template",

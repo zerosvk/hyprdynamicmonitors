@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"text/template"
 	"time"
@@ -62,16 +63,32 @@ func (g *ConfigGenerator) ValidateTemplates() error {
 	return nil
 }
 
+// BeforeChangeFunc is called once a change to the destination is certain (or would be done in dry run),
+// right before the destination is written
+type BeforeChangeFunc func()
+
 // GenerateConfig either renders a template or links a file, and returns if any changed were done
 // this includes stating the config files to catch if the user modified them by hand (in linking scenario)
 func (g *ConfigGenerator) GenerateConfig(cfg *config.RawConfig, profile *matchers.MatchedProfile,
 	connectedMonitors []*hypr.MonitorSpec, powerState power.PowerState, lidState power.LidState, destination string, dryRun bool,
 ) (bool, error) {
+	return g.GenerateConfigWithHook(cfg, profile, connectedMonitors, powerState, lidState, destination, dryRun, nil)
+}
+
+// GenerateConfigWithHook is GenerateConfig that calls beforeChange (when not nil) only when the destination
+// changes, used to run pre apply callbacks only when something is actually applied
+func (g *ConfigGenerator) GenerateConfigWithHook(cfg *config.RawConfig, profile *matchers.MatchedProfile,
+	connectedMonitors []*hypr.MonitorSpec, powerState power.PowerState, lidState power.LidState, destination string, dryRun bool,
+	beforeChange BeforeChangeFunc,
+) (bool, error) {
+	if beforeChange == nil {
+		beforeChange = func() {}
+	}
 	switch *profile.Profile.ConfigType {
 	case config.Static:
-		return g.linkConfigFile(profile.Profile, destination, dryRun)
+		return g.linkConfigFile(profile.Profile, destination, dryRun, beforeChange)
 	case config.Template:
-		return g.renderTemplateFile(cfg, profile, connectedMonitors, powerState, lidState, destination, dryRun)
+		return g.renderTemplateFile(cfg, profile, connectedMonitors, powerState, lidState, destination, dryRun, beforeChange)
 	default:
 		return false, fmt.Errorf("unsupported config type: %v", *profile.Profile.ConfigType)
 	}
@@ -79,6 +96,7 @@ func (g *ConfigGenerator) GenerateConfig(cfg *config.RawConfig, profile *matcher
 
 func (g *ConfigGenerator) renderTemplateFile(cfg *config.RawConfig, profile *matchers.MatchedProfile,
 	connectedMonitors []*hypr.MonitorSpec, powerState power.PowerState, lidState power.LidState, destination string, dryRun bool,
+	beforeChange BeforeChangeFunc,
 ) (bool, error) {
 	templatePath := profile.Profile.ConfigFile
 
@@ -109,6 +127,8 @@ func (g *ConfigGenerator) renderTemplateFile(cfg *config.RawConfig, profile *mat
 			return false, nil
 		}
 	}
+
+	beforeChange()
 
 	if dryRun {
 		logrus.WithFields(utils.NewLogrusCustomFields(map[string]interface{}{
@@ -251,19 +271,22 @@ func (g *ConfigGenerator) createTemplateData(cfg *config.RawConfig, profile *mat
 	return data
 }
 
-func (g *ConfigGenerator) linkConfigFile(profile *config.Profile, destination string, dryRun bool) (bool, error) {
+func (g *ConfigGenerator) linkConfigFile(profile *config.Profile, destination string, dryRun bool,
+	beforeChange BeforeChangeFunc,
+) (bool, error) {
 	source := profile.ConfigFile
 	differentContents, err := g.compareSymlinks(destination, source, profile)
 	if err == nil {
+		// already linked, the linked file itself might have been edited
+		if differentContents {
+			beforeChange()
+		}
 		return differentContents, nil
 	}
 
-	if _, err := os.Stat(destination); err == nil || !os.IsNotExist(err) {
-		if err := os.Remove(destination); err != nil {
-			return false, fmt.Errorf("failed to remove existing config: %w", err)
-		}
-	}
+	beforeChange()
 
+	// dry run must not touch the destination, check it before removing anything
 	if dryRun {
 		logrus.WithFields(utils.NewLogrusCustomFields(map[string]interface{}{
 			"config_file": source, "destination": destination,
@@ -272,8 +295,16 @@ func (g *ConfigGenerator) linkConfigFile(profile *config.Profile, destination st
 		return false, nil
 	}
 
-	if err := os.Symlink(source, destination); err != nil {
-		return false, fmt.Errorf("failed to create symlink from %s to %s: %w", source, destination, err)
+	// create the link under a temporary name and rename it over the destination,
+	// so hyprland never sees a missing config between removing the old one and linking
+	tmpLink := filepath.Join(filepath.Dir(destination),
+		fmt.Sprintf(".%s.hdm-%d-%d.tmp", filepath.Base(destination), os.Getpid(), time.Now().UnixNano()))
+	if err := os.Symlink(source, tmpLink); err != nil {
+		return false, fmt.Errorf("failed to create symlink from %s to %s: %w", source, tmpLink, err)
+	}
+	if err := os.Rename(tmpLink, destination); err != nil {
+		_ = os.Remove(tmpLink)
+		return false, fmt.Errorf("failed to replace %s with a symlink to %s: %w", destination, source, err)
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -301,7 +332,8 @@ func (g *ConfigGenerator) compareSymlinks(destination, source string, profile *c
 		return false, fmt.Errorf("cant readlink %s: %w", destination, err)
 	}
 	if target == source {
-		sourceFileInfo, err := os.Lstat(source)
+		// Stat follows a symlinked profile file so edits to its target are detected
+		sourceFileInfo, err := os.Stat(source)
 		if err != nil {
 			return false, fmt.Errorf("cant stat %s: %w", source, err)
 		}

@@ -85,6 +85,56 @@ func TestPowerDetector_Integration(t *testing.T) {
 	}
 }
 
+func TestPowerDetector_QueryFailureKeepsRunning(t *testing.T) {
+	service, testBusName, testObjectPath, cleanup := testutils.SetupTestDbusService(t)
+	defer cleanup()
+
+	time.Sleep(100 * time.Millisecond)
+
+	cfg := testutils.CreateTestPowerConfig(t, testBusName, testObjectPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := dbus.ConnectSessionBus()
+	require.NoError(t, err, "failed to connect to session bus")
+	defer conn.Close()
+
+	detector, err := power.NewPowerDetector(ctx, cfg, conn, false)
+	require.NoError(t, err, "should be able to create test power detector")
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- detector.Run(ctx)
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// the query after this signal fails, the detector should keep running
+	service.SetFailGet(true)
+	require.NoError(t, service.EmitSignal(), "should be able to emit signal")
+
+	select {
+	case err := <-runErr:
+		t.Fatalf("detector stopped after a failed query: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// and recover on the next signal
+	service.SetFailGet(false)
+	service.SetProperty(power.ACPowerState)
+	require.NoError(t, service.EmitSignal(), "should be able to emit signal")
+
+	select {
+	case event := <-detector.Listen():
+		require.Equal(t, power.ACPowerState, event.State, "should receive ac event")
+	case err := <-runErr:
+		t.Fatalf("detector stopped: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for power event")
+	}
+}
+
 func TestPowerDetector_DisabledPowerEvents_Simple(t *testing.T) {
 	ctx := context.Background()
 	cfg := testutils.NewTestConfig(t).Get()

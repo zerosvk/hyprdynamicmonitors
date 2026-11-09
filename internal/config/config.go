@@ -27,9 +27,10 @@ var defaultConfigTemplate string
 const LeaveEmpty = "leaveEmptyToken"
 
 type Config struct {
-	cfg  *RawConfig
-	path string
-	mu   sync.RWMutex
+	cfg      *RawConfig
+	path     string
+	mu       sync.RWMutex
+	reloadMu sync.Mutex
 }
 
 func NewConfig(path string) (*Config, error) {
@@ -46,18 +47,22 @@ func NewConfig(path string) (*Config, error) {
 }
 
 func (c *Config) Get() *RawConfig {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.cfg
 }
 
+// Reload parses the config without holding the lock (file reads, upower), so readers
+// are not blocked meanwhile; reloadMu keeps concurrent reloads from racing each other
 func (c *Config) Reload() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.reloadMu.Lock()
+	defer c.reloadMu.Unlock()
 	cfg, err := Load(c.path)
 	if err != nil {
 		return fmt.Errorf("cant reload config from %s: %w", c.path, err)
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.cfg = cfg
 	return nil
 }
@@ -226,6 +231,27 @@ var reservedTemplateVariables = map[string]bool{
 	"MonitorsByTag": true,
 	"Monitors":      true,
 	"PowerState":    true,
+}
+
+// shadowedTemplateVariables are also set by the generator, user values with these keys
+// replace them; this is only warned about so that existing configs keep loading
+var shadowedTemplateVariables = map[string]bool{
+	"RequiredMonitors": true,
+	"ExtraMonitors":    true,
+	"LidState":         true,
+}
+
+func validateTemplateValues(values map[string]string) error {
+	for key := range values {
+		if _, ok := reservedTemplateVariables[key]; ok {
+			return errors.New("key " + key + " cant be used since it is a reserved keyword")
+		}
+		if _, ok := shadowedTemplateVariables[key]; ok {
+			logrus.WithField("key", key).Warn(
+				"static_template_values key overrides the built-in template variable with the same name")
+		}
+	}
+	return nil
 }
 
 type ConfigFileType int
@@ -441,7 +467,7 @@ func Load(configPath string) (*RawConfig, error) {
 	logrus.Debugf("Config contents: %s", contents)
 
 	var config RawConfig
-	m, err := toml.DecodeFile(configPath, &config)
+	m, err := toml.Decode(string(contents), &config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode TOML: %w", err)
 	}
@@ -552,10 +578,8 @@ func (c *RawConfig) Validate() error {
 		return fmt.Errorf("hot reload section validation failed: %w", err)
 	}
 
-	for key := range c.StaticTemplateValues {
-		if _, ok := reservedTemplateVariables[key]; ok {
-			return errors.New("key " + key + " cant be used since it is a reserved keyword")
-		}
+	if err := validateTemplateValues(c.StaticTemplateValues); err != nil {
+		return err
 	}
 
 	if c.TUISection == nil {
@@ -582,13 +606,11 @@ func (t *TUISection) Validate(configDirPath string) error {
 
 		t.Colors.SourceFile = utils.JustPtr(os.ExpandEnv(*t.Colors.SourceFile))
 
-		if strings.HasPrefix(*t.Colors.SourceFile, "~/") {
-			homeDir, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("cant get user home directory: %w", err)
-			}
-			t.Colors.SourceFile = utils.JustPtr(filepath.Join(homeDir, (*t.Colors.SourceFile)[2:]))
+		expanded, err := utils.ExpandHome(*t.Colors.SourceFile)
+		if err != nil {
+			return fmt.Errorf("cant expand home in %s: %w", *t.Colors.SourceFile, err)
 		}
+		t.Colors.SourceFile = utils.JustPtr(expanded)
 
 		absConfigFile, err := filepath.Abs(*t.Colors.SourceFile)
 		if err != nil {
@@ -604,7 +626,7 @@ func (t *TUISection) Validate(configDirPath string) error {
 		logrus.Debugf("Config contents: %s", contents)
 
 		var config TUIColors
-		_, err = toml.DecodeFile(*t.Colors.SourceFile, &config)
+		_, err = toml.Decode(string(contents), &config)
 		if err != nil {
 			return fmt.Errorf("failed to decode TOML: %w", err)
 		}
@@ -854,25 +876,24 @@ func (g *GeneralSection) Validate() error {
 }
 
 func (s *ScoringSection) Validate() error {
-	defaultScore := 1
-
+	// separate pointers per field so that changing one score never changes the others
 	if s.NameMatch == nil {
-		s.NameMatch = &defaultScore
+		s.NameMatch = utils.IntPtr(1)
 	}
 	if s.DescriptionMatch == nil {
-		s.DescriptionMatch = &defaultScore
+		s.DescriptionMatch = utils.IntPtr(1)
 	}
 	if s.PowerStateMatch == nil {
-		s.PowerStateMatch = &defaultScore
+		s.PowerStateMatch = utils.IntPtr(1)
 	}
 	if s.LidStateMatch == nil {
-		s.LidStateMatch = &defaultScore
+		s.LidStateMatch = utils.IntPtr(1)
 	}
 
 	fields := []int{*s.DescriptionMatch, *s.NameMatch, *s.PowerStateMatch, *s.LidStateMatch}
 	for _, field := range fields {
 		if 1 > field {
-			return errors.New("scoring section validation failed, score needs to be > 1")
+			return errors.New("scoring section validation failed, score needs to be >= 1")
 		}
 	}
 
@@ -907,6 +928,11 @@ func (p *Profile) Validate(configPath string) error {
 	}).Debug("Profile config file resolved")
 
 	p.ConfigFile = os.ExpandEnv(p.ConfigFile)
+	expanded, err := utils.ExpandHome(p.ConfigFile)
+	if err != nil {
+		return fmt.Errorf("cant expand home in %s: %w", p.ConfigFile, err)
+	}
+	p.ConfigFile = expanded
 	absConfigFile, err := filepath.Abs(p.ConfigFile)
 	if err != nil {
 		return fmt.Errorf("cant get absolute path to config file %s: %w", p.ConfigFile, err)
@@ -934,10 +960,8 @@ func (p *Profile) Validate(configPath string) error {
 		return fmt.Errorf("conditions validation failed: %w", err)
 	}
 
-	for key := range p.StaticTemplateValues {
-		if _, ok := reservedTemplateVariables[key]; ok {
-			return errors.New("key " + key + " cant be used since it is a reserved keyword")
-		}
+	if err := validateTemplateValues(p.StaticTemplateValues); err != nil {
+		return err
 	}
 
 	return nil
@@ -1087,18 +1111,23 @@ func (ps *PowerSection) Validate() error {
 		}
 	}
 
-	defaultPowerLine := "/org/freedesktop/UPower/devices/line_power_ACAD"
-	powerLine, err := utils.GetPowerLine()
-	if err != nil {
-		logrus.WithError(err).Warningf("No power line available, will use a default: %s", defaultPowerLine)
-		powerLine = utils.JustPtr(defaultPowerLine)
+	// the power line is only needed for defaults, inferring it runs `upower -e`
+	// so skip it when the user configured explicit paths
+	defaultObjectPath := ""
+	if ps.needsPowerLine() {
+		defaultPowerLine := "/org/freedesktop/UPower/devices/line_power_ACAD"
+		powerLine, err := utils.GetPowerLine()
+		if err != nil {
+			logrus.WithError(err).Warningf("No power line available, will use a default: %s", defaultPowerLine)
+			powerLine = utils.JustPtr(defaultPowerLine)
+		}
+		logrus.WithFields(logrus.Fields{"power_line": *powerLine}).Info(
+			"Inferred power line")
+		defaultObjectPath = *powerLine
 	}
-	logrus.WithFields(logrus.Fields{"power_line": *powerLine}).Info(
-		"Inferred power line")
 
 	defaultInterface := "org.freedesktop.DBus.Properties"
 	defaultMember := "PropertiesChanged"
-	defaultObjectPath := *powerLine
 	for _, rule := range ps.DbusSignalMatchRules {
 		if err := rule.Validate(defaultInterface, defaultMember, defaultObjectPath); err != nil {
 			return fmt.Errorf("one of the dbus match rules is invalid: %w", err)
@@ -1123,7 +1152,7 @@ func (ps *PowerSection) Validate() error {
 
 	defaultDestination := "org.freedesktop.UPower"
 	defaultMethod := "org.freedesktop.DBus.Properties.Get"
-	defaultPath := *powerLine
+	defaultPath := defaultObjectPath
 	defaultArgs := []DbusQueryObjectArg{
 		{Arg: "org.freedesktop.UPower.Device"},
 		{Arg: "Online"},
@@ -1135,6 +1164,17 @@ func (ps *PowerSection) Validate() error {
 	}
 
 	return nil
+}
+
+// needsPowerLine reports whether any default depends on the inferred power line,
+// i.e. a match rule without object_path or a query object without path
+func (ps *PowerSection) needsPowerLine() bool {
+	for _, rule := range ps.DbusSignalMatchRules {
+		if rule.ObjectPath == nil {
+			return true
+		}
+	}
+	return ps.DbusQueryObject == nil || ps.DbusQueryObject.Path == ""
 }
 
 func (d *DbusQueryObject) CollectArgs() []interface{} {

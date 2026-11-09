@@ -110,12 +110,17 @@ func (s *Service) addWatchedPaths(paths []string) error {
 
 func (s *Service) removeCurrentlyTrackedPaths() error {
 	logrus.Debug("Removing currently tracked paths")
+	configDir := s.cfg.Get().ConfigDirPath
 	for path := range s.watchedPaths {
-		if _, ok := s.watchedPaths[path]; !ok {
+		// the config dir is watched for the lifetime of the service (ensureConfigPathIsTracked),
+		// a profile living next to the config must not remove that watch
+		if path == configDir {
+			delete(s.watchedPaths, path)
 			continue
 		}
+		// a watch can already be gone, e.g. when the directory was deleted
 		if err := s.watcher.Remove(path); err != nil &&
-			errors.Is(err, fsnotify.ErrNonExistentWatch) {
+			!errors.Is(err, fsnotify.ErrNonExistentWatch) {
 			return fmt.Errorf("cant remove %s from watcher: %w", path, err)
 		}
 		delete(s.watchedPaths, path)
@@ -223,12 +228,14 @@ func (s *Service) runServiceLoop(ctx context.Context, watcher *fsnotify.Watcher)
 			logrus.WithFields(logrus.Fields{"fun": utils.GetFunctionName(
 				s.updateProcessor)}).Debug("Scheduled debounced update")
 		case err, ok := <-watcher.Errors:
-			logrus.WithError(err).Debug("Watcher errored")
 			if !ok {
 				return errors.New("watcher error channel is closed")
 			}
 			if err != nil {
-				return fmt.Errorf("watcher error received: %w", err)
+				// e.g. fsnotify.ErrEventOverflow, the watcher keeps working afterwards,
+				// schedule a reload since events might have been dropped
+				logrus.WithError(err).Warn("Watcher error received, scheduling a reload")
+				s.debouncer.Do(ctx, time.Duration(*s.cfg.Get().HotReload.UpdateDebounceTimer)*time.Millisecond, s.updateProcessor)
 			}
 		case <-ctx.Done():
 			logrus.Debug("Context cancelled, shutting fswatcher down")
@@ -244,7 +251,12 @@ func (s *Service) updateProcessor(ctx context.Context) error {
 		return context.Cause(ctx)
 	default:
 		logrus.Debug("Sending update event")
-		s.events <- true
+		select {
+		case s.events <- true:
+		case <-ctx.Done():
+			// the reloader might be gone already during shutdown, dont block forever
+			logrus.Debug("Config update processor context cancelled while sending")
+		}
 		return nil
 	}
 }

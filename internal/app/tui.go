@@ -65,7 +65,9 @@ func NewTUI(ctx context.Context, configPath, mockedHyprMonitors string,
 
 	var fw *filewatcher.Service
 	var pw *power.PowerDetector
-	var currentState power.PowerState
+	// same defaults as the daemon uses when power or lid events are disabled,
+	// otherwise profiles requiring power_state = "AC" never match in the TUI
+	currentState := power.ACPowerState
 	if cfg != nil {
 		fw = filewatcher.NewService(cfg, utils.BoolPtr(false))
 	}
@@ -82,7 +84,7 @@ func NewTUI(ctx context.Context, configPath, mockedHyprMonitors string,
 	}
 
 	var ld *power.LidStateDetector
-	var lidState power.LidState
+	lidState := power.OpenedLidState
 	if cfg != nil && enableLidEvents {
 		conn, err := getBus(connectToSessionBus)
 		if err != nil {
@@ -134,7 +136,10 @@ func (t *TUI) Run(ctx context.Context, cancel context.CancelCauseFunc) error {
 					}
 					logrus.Debug("Watcher event received")
 					if err := t.cfg.Reload(); err != nil {
-						return fmt.Errorf("cant reload user configuration: %w", err)
+						// keep the TUI open with the previous config, the user is likely mid-edit
+						logrus.WithError(err).Error("Cant reload user configuration")
+						t.program.Send(tui.OperationStatusCmd(tui.OperationNameHDMConfigReloadRequested, err)())
+						continue
 					}
 					t.program.Send(tui.ConfigReloaded{})
 

@@ -87,25 +87,64 @@ func TestIPC_Run(t *testing.T) {
 			description: "Should not send events when data does not change",
 		},
 		{
-			name: "parse_error",
+			name: "malformed_event_still_refreshes",
 			mockEvents: []string{
 				"monitoraddedv2>>placeholder",
 			},
-			expectedErrors: []string{
-				"cant parse event",
-			},
 			responsePaths: []string{
-				"testdata/monitors_response_valid_1.json",
+				"testdata/monitors_response_valid_1.json", // initial setup
+				"testdata/monitors_response_valid_2.json", // malformed event
 			},
 			expectedCommands: []string{
 				"j/monitors all",
+				"j/monitors all",
 			},
 			expectedEventPaths: []string{
-				"testdata/monitors_response_valid_1.json",
+				"testdata/monitors_response_valid_2.json",
 			},
-			expectError: true,
-			description: "Should return parse error for malformed event",
-			exitOnError: true,
+			expectError: false,
+			description: "Should not fail on a malformed monitor event payload and refresh monitors instead",
+		},
+		{
+			name: "description_with_commas",
+			mockEvents: []string{
+				"monitoraddedv2>>2,DP-1,Tatung Company of America, Inc. TM-1, 0x0001",
+			},
+			responsePaths: []string{
+				"testdata/monitors_response_valid_1.json", // initial setup
+				"testdata/monitors_response_valid_2.json", // first event
+			},
+			expectedCommands: []string{
+				"j/monitors all",
+				"j/monitors all",
+			},
+			expectedEventPaths: []string{
+				"testdata/monitors_response_valid_2.json",
+			},
+			expectError: false,
+			description: "Should handle monitor descriptions that contain commas",
+		},
+		{
+			name: "no_monitors_keeps_running",
+			mockEvents: []string{
+				"monitorremovedv2>>1,eDP-1,Built-in Display",
+				"monitoraddedv2>>2,DP-1,External Monitor",
+			},
+			responsePaths: []string{
+				"testdata/monitors_response_valid_1.json", // initial setup
+				"testdata/monitors_response_empty.json",   // all monitors gone
+				"testdata/monitors_response_valid_2.json", // monitor is back
+			},
+			expectedCommands: []string{
+				"j/monitors all",
+				"j/monitors all",
+				"j/monitors all",
+			},
+			expectedEventPaths: []string{
+				"testdata/monitors_response_valid_2.json",
+			},
+			expectError: false,
+			description: "Should skip the update when no monitors are reported and keep processing events",
 		},
 	}
 

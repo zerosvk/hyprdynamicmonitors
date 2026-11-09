@@ -505,9 +505,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if stateChanged {
+		// copy the state now, the command runs on another goroutine while Update keeps mutating rootState
+		state := m.rootState.State
 		cmds = append(cmds, func() tea.Msg {
 			return StateChanged{
-				State: m.rootState.State,
+				State: state,
 			}
 		})
 	}

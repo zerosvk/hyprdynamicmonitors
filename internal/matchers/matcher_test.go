@@ -654,6 +654,74 @@ func TestMatcher_Match(t *testing.T) {
 			description:     "Should not match when only one monitor matches a rule that requires two matches",
 		},
 		{
+			name: "general_rule_before_specific_rule_still_matches",
+			config: createTestConfig(t, map[string]*config.Profile{
+				"two_dp": {
+					Name: "two_dp",
+					Conditions: &config.ProfileCondition{
+						RequiredMonitors: []*config.RequiredMonitor{
+							{Name: utils.StringPtr("DP-.*"), MatchNameUsingRegex: utils.JustPtr(true), MonitorTag: utils.StringPtr("any")},
+							{Name: utils.StringPtr("DP-1"), MonitorTag: utils.StringPtr("main")},
+						},
+					},
+				},
+			}).Get(),
+			connectedMonitors: []*hypr.MonitorSpec{
+				{Name: "DP-1", ID: utils.IntPtr(0), Description: "Dell Monitor A"},
+				{Name: "DP-2", ID: utils.IntPtr(1), Description: "Dell Monitor B"},
+			},
+			powerState:      power.ACPowerState,
+			expectedProfile: "two_dp",
+			expectedMonitorToRule: map[int]*config.RequiredMonitor{
+				0: {
+					Name: utils.StringPtr("DP-1"), MonitorTag: utils.StringPtr("main"),
+					MatchDescriptionUsingRegex: utils.JustPtr(false), MatchNameUsingRegex: utils.JustPtr(false),
+				},
+				1: {
+					Name: utils.StringPtr("DP-.*"), MonitorTag: utils.StringPtr("any"),
+					MatchDescriptionUsingRegex: utils.JustPtr(false), MatchNameUsingRegex: utils.JustPtr(true),
+				},
+			},
+			description: "A general regex rule listed first must not take the only monitor the specific rule can use",
+		},
+		{
+			name: "rule_assignment_chain",
+			config: createTestConfig(t, map[string]*config.Profile{
+				"three": {
+					Name: "three",
+					Conditions: &config.ProfileCondition{
+						RequiredMonitors: []*config.RequiredMonitor{
+							{Description: utils.StringPtr(".*"), MatchDescriptionUsingRegex: utils.JustPtr(true), MonitorTag: utils.StringPtr("any")},
+							{Description: utils.StringPtr("(Dell|LG).*"), MatchDescriptionUsingRegex: utils.JustPtr(true), MonitorTag: utils.StringPtr("dell_or_lg")},
+							{Description: utils.StringPtr("Dell.*"), MatchDescriptionUsingRegex: utils.JustPtr(true), MonitorTag: utils.StringPtr("dell")},
+						},
+					},
+				},
+			}).Get(),
+			connectedMonitors: []*hypr.MonitorSpec{
+				{Name: "DP-1", ID: utils.IntPtr(0), Description: "Dell Monitor"},
+				{Name: "DP-2", ID: utils.IntPtr(1), Description: "LG Monitor"},
+				{Name: "eDP-1", ID: utils.IntPtr(2), Description: "BOE Panel"},
+			},
+			powerState:      power.ACPowerState,
+			expectedProfile: "three",
+			expectedMonitorToRule: map[int]*config.RequiredMonitor{
+				0: {
+					Description: utils.StringPtr("Dell.*"), MonitorTag: utils.StringPtr("dell"),
+					MatchDescriptionUsingRegex: utils.JustPtr(true), MatchNameUsingRegex: utils.JustPtr(false),
+				},
+				1: {
+					Description: utils.StringPtr("(Dell|LG).*"), MonitorTag: utils.StringPtr("dell_or_lg"),
+					MatchDescriptionUsingRegex: utils.JustPtr(true), MatchNameUsingRegex: utils.JustPtr(false),
+				},
+				2: {
+					Description: utils.StringPtr(".*"), MonitorTag: utils.StringPtr("any"),
+					MatchDescriptionUsingRegex: utils.JustPtr(true), MatchNameUsingRegex: utils.JustPtr(false),
+				},
+			},
+			description: "Assignments are moved along a chain until every rule has its own monitor",
+		},
+		{
 			name: "combined_power_and_lid_state_matching",
 			config: createTestConfig(t, map[string]*config.Profile{
 				"battery_lid_closed": {

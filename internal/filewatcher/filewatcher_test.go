@@ -145,6 +145,48 @@ func TestFilewatcher_Integration(t *testing.T) {
 				return nil
 			},
 		},
+		{
+			name: "config dir stays watched after a profile next to the config moves away",
+			setupChange: func(cfg *config.Config) error {
+				configDir := cfg.Get().ConfigDirPath
+				return os.WriteFile(filepath.Join(configDir, "trigger.txt"), []byte("x"), 0o600)
+			},
+			expectEvent: true,
+			changeDesc:  "new file in config directory",
+			validateAfter: func(cfg *config.Config, svc *filewatcher.Service, events <-chan interface{}) error {
+				configDirPath := cfg.Get().ConfigDirPath
+				saveWithProfileAt := func(configFile string) {
+					require.NoError(t, os.WriteFile(configFile, []byte("placeholder"), 0o600))
+					testutils.NewTestConfig(t).WithConfigDir(configDirPath).WithProfiles(map[string]*config.Profile{
+						"profile": {
+							Name:       "profile",
+							ConfigFile: configFile,
+							Conditions: &config.ProfileCondition{
+								RequiredMonitors: []*config.RequiredMonitor{{Name: utils.StringPtr("eDP-1")}},
+							},
+						},
+					}).WithHotReload(cfg.Get().HotReload).FillDefaults().SaveToFile()
+					require.NoError(t, cfg.Reload(), "cant reload configuration")
+					require.NoError(t, svc.Update(), "cant update service")
+					drainEvents(t, events)
+				}
+
+				// a profile living in the config dir itself, then moved to another dir
+				saveWithProfileAt(filepath.Join(configDirPath, "next_to_config.conf"))
+				otherDir := t.TempDir()
+				saveWithProfileAt(filepath.Join(otherDir, "elsewhere.conf"))
+
+				// editing the main config must still trigger a reload
+				require.NoError(t, os.WriteFile(filepath.Join(configDirPath, "another.txt"), []byte("x"), 0o600))
+				select {
+				case event := <-events:
+					assert.NotNil(t, event, "should receive an event for a config dir change")
+				case <-time.After(500 * time.Millisecond):
+					t.Fatalf("config dir is no longer watched")
+				}
+				return nil
+			},
+		},
 	}
 
 	for _, tt := range tests {

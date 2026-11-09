@@ -729,8 +729,10 @@ func Test__Run_Binary(t *testing.T) {
 					expectOutputToContain: "Rotation: 0",
 				},
 				{
+					// power events are disabled, so like the daemon the TUI assumes AC
+					// and the default "ac" profile matches
 					input:                 keyTab,
-					expectOutputToContain: "No Matching Profile",
+					expectOutputToContain: "Profile: ac",
 				},
 				{
 					input:                 "n",

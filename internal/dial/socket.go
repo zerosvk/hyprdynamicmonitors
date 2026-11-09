@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"time"
 
 	"github.com/fiffeek/hyprdynamicmonitors/internal/utils"
 	"github.com/sirupsen/logrus"
@@ -34,8 +35,16 @@ type SocketJSONResponse interface {
 	Validate() error
 }
 
+// queryTimeout bounds a single request/response on the hyprland command socket,
+// so a hung compositor cant block the daemon forever
+var queryTimeout = 5 * time.Second
+
 func SyncQuerySocket[T SocketJSONResponse](conn net.Conn, command string) (T, error) {
 	var zero T
+
+	if err := conn.SetDeadline(time.Now().Add(queryTimeout)); err != nil {
+		return zero, fmt.Errorf("failed to set socket deadline: %w", err)
+	}
 
 	_, err := conn.Write([]byte(command))
 	if err != nil {

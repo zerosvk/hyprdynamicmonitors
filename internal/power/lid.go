@@ -88,7 +88,13 @@ func (l *LidStateDetector) Listen() <-chan LidEvent {
 }
 
 func (l *LidStateDetector) shouldHandleSignal(sig *dbus.Signal) bool {
-	for _, filter := range l.cfg.Get().LidEvents.DbusSignalReceiveFilters {
+	return signalMatchesFilters(sig, l.cfg.Get().LidEvents.DbusSignalReceiveFilters)
+}
+
+// signalMatchesFilters returns true when any filter matches the signal, a filter matches
+// when its name (if set) equals the signal name and its body (if set) is contained in the signal body
+func signalMatchesFilters(sig *dbus.Signal, filters []*config.DbusSignalReceiveFilter) bool {
+	for _, filter := range filters {
 		if filter.Name != nil && *filter.Name != sig.Name {
 			logrus.WithFields(logrus.Fields{"filter": *filter.Name}).Debug("Filter not matching the name")
 			continue
@@ -135,7 +141,8 @@ func (l *LidStateDetector) Reload(ctx context.Context) error {
 	defer l.stateMu.Unlock()
 	rules := l.createMatchRules()
 	if reflect.DeepEqual(rules, l.dbusMatchOptions) {
-		logrus.Debug("power events rules match, nothing to be done")
+		logrus.Debug("dbus match rules unchanged, nothing to be done")
+		return nil
 	}
 
 	for _, ruleSet := range l.dbusMatchOptions {
@@ -259,8 +266,11 @@ func (l *LidStateDetector) Run(ctx context.Context) error {
 				logrus.Debug("Signal, calling getCurrentState")
 				currentState, err = l.getCurrentState(ctx)
 				if err != nil {
-					logrus.WithError(err).Error("getCurrentState failed")
-					return fmt.Errorf("failed to get power state after signal %s: %w", signal.Name, err)
+					// e.g. UPower restarting during an upgrade, keep the last known state
+					// and wait for the next signal instead of stopping the daemon
+					logrus.WithError(err).WithField("signal_name", signal.Name).Warn(
+						"Cant query the lid state after a signal, keeping the last known state")
+					continue
 				}
 
 				logrus.WithFields(logrus.Fields{"state": currentState}).Debug("getCurrentState succeeded")

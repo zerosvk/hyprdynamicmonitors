@@ -83,66 +83,105 @@ func (m *Matcher) scoreProfile(cfg *config.RawConfig, conditions *config.Profile
 		profileScore += *cfg.Scoring.LidStateMatch
 	}
 
-	usedMonitors := map[int]bool{}
-	for _, connectedMonitor := range connectedMonitors {
-		usedMonitors[*connectedMonitor.ID] = false
+	// a monitor matches a rule only when every attribute the rule defines matches,
+	// so a matched rule always earns its full score; build the candidate monitors per rule
+	candidates := make([][]int, len(conditions.RequiredMonitors))
+	ruleScores := make([]int, len(conditions.RequiredMonitors))
+	for ruleIdx, condition := range conditions.RequiredMonitors {
+		for monitorIdx, connectedMonitor := range connectedMonitors {
+			score := m.ruleScore(cfg, condition, connectedMonitor)
+			if score == 0 {
+				continue
+			}
+			candidates[ruleIdx] = append(candidates[ruleIdx], monitorIdx)
+			ruleScores[ruleIdx] = score
+		}
 	}
 
-	// one rule will match at best with one monitor
-	for _, condition := range conditions.RequiredMonitors {
-		// find best monitor match in terms of scoring
-		bestScore, bestMonitor := 0, -1
-
-		// iterate over all the monitors, excluding the already matched
-		for _, connectedMonitor := range connectedMonitors {
-			// if the monitor was matched by any other rule, skip
-			if usedMonitors[*connectedMonitor.ID] {
-				logrus.WithFields(logrus.Fields{"monitor_id": *connectedMonitor.ID}).Debug(
-					"Monitor already matched to another rule")
-				continue
-			}
-
-			// if both are defined but there is a mismatch on either then skip
-			if condition.HasName() && condition.HasDescription() &&
-				(!condition.MatchName(connectedMonitor.Name) ||
-					!condition.MatchDescription(connectedMonitor.Description)) {
-				logrus.WithFields(logrus.Fields{"monitor_id": *connectedMonitor.ID}).Debug(
-					"Monitor mismatches on description or name but both are required")
-				continue
-			}
-
-			logrus.WithFields(logrus.Fields{"monitor_id": *connectedMonitor.ID}).Debug("Matching monitor with rule")
-
-			score := 0
-			if condition.HasName() && condition.MatchName(connectedMonitor.Name) {
-				score += *cfg.Scoring.NameMatch
-				logrus.WithFields(logrus.Fields{
-					"monitor_id":   *connectedMonitor.ID,
-					"monitor_name": connectedMonitor.Name, "rule": *condition.Name,
-				}).Debug("Name matches")
-			}
-			if condition.HasDescription() && condition.MatchDescription(connectedMonitor.Description) {
-				score += *cfg.Scoring.DescriptionMatch
-				logrus.WithFields(logrus.Fields{
-					"monitor_id":   *connectedMonitor.ID,
-					"monitor_name": connectedMonitor.Name, "rule": *condition.Description,
-				}).Debug("Description matches")
-			}
-
-			if score > bestScore {
-				bestScore = score
-				bestMonitor = *connectedMonitor.ID
-			}
+	// assign each rule a distinct monitor; greedy first (keeps the first matching monitor
+	// in hyprland order), then augmenting paths so that an earlier rule that took a monitor
+	// another rule needs can move to a different one, e.g. rules "DP-.*" and "DP-1"
+	assignment := assignRules(candidates, len(connectedMonitors))
+	for ruleIdx, monitorIdx := range assignment {
+		if monitorIdx < 0 {
+			continue
 		}
-
-		if bestScore > 0 {
-			profileScore += bestScore
-			usedMonitors[bestMonitor] = true
-			monitorToRule[bestMonitor] = condition
-		}
+		condition := conditions.RequiredMonitors[ruleIdx]
+		monitorID := *connectedMonitors[monitorIdx].ID
+		logrus.WithFields(logrus.Fields{
+			"monitor_id":   monitorID,
+			"monitor_name": connectedMonitors[monitorIdx].Name,
+			"rule_index":   ruleIdx,
+		}).Debug("Monitor assigned to rule")
+		profileScore += ruleScores[ruleIdx]
+		monitorToRule[monitorID] = condition
 	}
 
 	return profileScore, monitorToRule
+}
+
+// ruleScore returns the score of a monitor for a rule, 0 when it does not match;
+// when the rule defines both name and description both have to match
+func (m *Matcher) ruleScore(cfg *config.RawConfig, condition *config.RequiredMonitor,
+	connectedMonitor *hypr.MonitorSpec,
+) int {
+	if condition.HasName() && condition.HasDescription() &&
+		(!condition.MatchName(connectedMonitor.Name) ||
+			!condition.MatchDescription(connectedMonitor.Description)) {
+		return 0
+	}
+
+	score := 0
+	if condition.HasName() && condition.MatchName(connectedMonitor.Name) {
+		score += *cfg.Scoring.NameMatch
+	}
+	if condition.HasDescription() && condition.MatchDescription(connectedMonitor.Description) {
+		score += *cfg.Scoring.DescriptionMatch
+	}
+	return score
+}
+
+// assignRules finds a maximum matching between rules and monitors (each monitor used at most once).
+// candidates[rule] lists the matching monitor indexes in preference order. Returns, per rule, the
+// assigned monitor index or -1.
+func assignRules(candidates [][]int, monitorCount int) []int {
+	ruleOf := make([]int, monitorCount) // monitor -> rule
+	for i := range ruleOf {
+		ruleOf[i] = -1
+	}
+	monitorOf := make([]int, len(candidates)) // rule -> monitor
+	for i := range monitorOf {
+		monitorOf[i] = -1
+	}
+
+	var try func(rule int, visited []bool) bool
+	try = func(rule int, visited []bool) bool {
+		// prefer a free monitor so that assignments only move when they have to
+		for _, monitor := range candidates[rule] {
+			if ruleOf[monitor] == -1 {
+				ruleOf[monitor] = rule
+				monitorOf[rule] = monitor
+				return true
+			}
+		}
+		for _, monitor := range candidates[rule] {
+			if visited[monitor] {
+				continue
+			}
+			visited[monitor] = true
+			if try(ruleOf[monitor], visited) {
+				ruleOf[monitor] = rule
+				monitorOf[rule] = monitor
+				return true
+			}
+		}
+		return false
+	}
+
+	for rule := range candidates {
+		try(rule, make([]bool, monitorCount))
+	}
+	return monitorOf
 }
 
 func (m *Matcher) calcFullProfileScore(cfg *config.RawConfig, conditions *config.ProfileCondition) int {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 	"sync"
 
 	"github.com/fiffeek/hyprdynamicmonitors/internal/config"
@@ -150,12 +149,8 @@ func (p *PowerDetector) createMatchRules() [][]dbus.MatchOption {
 	return rules
 }
 
-func (p *PowerDetector) getExpectedSignalNames() []string {
-	result := []string{}
-	for _, filter := range p.cfg.Get().PowerEvents.DbusSignalReceiveFilters {
-		result = append(result, *filter.Name)
-	}
-	return result
+func (p *PowerDetector) shouldHandleSignal(sig *dbus.Signal) bool {
+	return signalMatchesFilters(sig, p.cfg.Get().PowerEvents.DbusSignalReceiveFilters)
 }
 
 func (p *PowerDetector) Reload(ctx context.Context) error {
@@ -168,7 +163,8 @@ func (p *PowerDetector) Reload(ctx context.Context) error {
 	defer p.stateMu.Unlock()
 	rules := p.createMatchRules()
 	if reflect.DeepEqual(rules, p.dbusMatchOptions) {
-		logrus.Debug("power events rules match, nothing to be done")
+		logrus.Debug("dbus match rules unchanged, nothing to be done")
+		return nil
 	}
 
 	for _, ruleSet := range p.dbusMatchOptions {
@@ -238,12 +234,15 @@ func (p *PowerDetector) Run(ctx context.Context) error {
 				var currentState PowerState
 				var err error
 
-				if slices.Contains(p.getExpectedSignalNames(), signal.Name) {
+				if p.shouldHandleSignal(signal) {
 					logrus.Debug("Signal matches expected name, calling getCurrentState")
 					currentState, err = p.getCurrentState(ctx)
 					if err != nil {
-						logrus.WithError(err).Error("getCurrentState failed")
-						return fmt.Errorf("failed to get power state after signal %s: %w", signal.Name, err)
+						// e.g. UPower restarting during an upgrade, keep the last known state
+						// and wait for the next signal instead of stopping the daemon
+						logrus.WithError(err).WithField("signal_name", signal.Name).Warn(
+							"Cant query the power state after a signal, keeping the last known state")
+						continue
 					}
 
 					logrus.WithFields(logrus.Fields{"state": currentState}).Debug("getCurrentState succeeded")
